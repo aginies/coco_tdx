@@ -711,9 +711,7 @@ def convert_md_to_html(md_path, html_path):
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{hero_title}</title>
-<style>
-{style_content}
-</style>
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
 <div class="layout">
@@ -738,6 +736,14 @@ def convert_md_to_html(md_path, html_path):
 </body>
 </html>
 """
+
+        # Write CSS to external file (CSP-compliant: no inline <style>)
+        css_path = "style.css"
+        try:
+                with open(css_path, "w", encoding="utf-8") as f:
+                        f.write(style_content)
+        except OSError as e:
+                raise SystemExit(f"error: cannot write {css_path}: {e}") from e
 
         try:
                 with open(html_path, "w", encoding="utf-8") as f:
