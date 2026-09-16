@@ -1,225 +1,309 @@
-@import url('https://fonts.googleapis.com/css2?family=SUSE:wght@100..800&family=Roboto+Mono:ital,wght@0,100..700;1,100..700&display=swap');
+@import url("https://fonts.googleapis.com/css2?family=SUSE:wght@100..800&family=Roboto+Mono:ital,wght@0,100..700;1,100..700&display=swap");
 
-  :root {
-    --bg: #efefef; /* SUSE Fog */
-    --card: #ffffff; /* Pure White */
-    --ink: #0c322c; /* SUSE Pine (Deep green/black) for text and titles */
-    --muted: #525252; /* Fog Shade */
-    --accent: #30ba78; /* SUSE Jungle (Vibrant Green) */
-    --accent-dark: #0c322c; /* SUSE Pine (Deep forest green) */
-    --code-bg: #0c322c; /* SUSE Pine for code block backgrounds */
-    --code-ink: #c0efde; /* Jungle Shade */
-    --border: #dcdbdc; /* Fog Shade */
-    --ok: #30ba78; /* SUSE Jungle */
-    --warn-bg: #ffefe9; /* Persimmon Shade */
-    --warn-border: #fe7c3f; /* SUSE Persimmon (Orange) */
-    --info-bg: #e6edfe; /* Waterhole Shade */
-    --info-border: #2453ff; /* SUSE Waterhole (Blue) */
+:root {
+  --bg: #efefef; /* SUSE Fog */
+  --card: #ffffff; /* Pure White */
+  --ink: #0c322c; /* SUSE Pine (Deep green/black) for text and titles */
+  --muted: #525252; /* Fog Shade */
+  --accent: #30ba78; /* SUSE Jungle (Vibrant Green) */
+  --accent-dark: #0c322c; /* SUSE Pine (Deep forest green) */
+  --code-bg: #0c322c; /* SUSE Pine for code block backgrounds */
+  --code-ink: #c0efde; /* Jungle Shade */
+  --border: #dcdbdc; /* Fog Shade */
+  --ok: #30ba78; /* SUSE Jungle */
+  --warn-bg: #ffefe9; /* Persimmon Shade */
+  --warn-border: #fe7c3f; /* SUSE Persimmon (Orange) */
+  --info-bg: #e6edfe; /* Waterhole Shade */
+  --info-border: #2453ff; /* SUSE Waterhole (Blue) */
 
-    /* SUSE Typography */
-    --font-sans: 'SUSE', Verdana, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-    --font-mono: 'SUSE Mono', 'Roboto Mono', ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0;
-    font-family: var(--font-sans);
-    background: var(--bg);
-    color: var(--ink);
-    line-height: 1.6;
-    text-align: left; /* Left align only as per SUSE guidelines */
-  }
-  .layout { display: flex; max-width: 1400px; margin: 0 auto; }
-  /* ---------- Sidebar ---------- */
+  /* SUSE Typography */
+  --font-sans:
+    "SUSE", Verdana, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica,
+    Arial, sans-serif;
+  --font-mono:
+    "SUSE Mono", "Roboto Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo,
+    Consolas, monospace;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  background: var(--bg);
+  color: var(--ink);
+  line-height: 1.6;
+  text-align: left; /* Left align only as per SUSE guidelines */
+}
+.layout {
+  display: flex;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+/* ---------- Sidebar ---------- */
+nav.toc {
+  width: 280px;
+  flex-shrink: 0;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+  padding: 24px 16px;
+  background: var(--card);
+  border-right: 1px solid var(--border);
+  font-size: 14px;
+  font-family: var(--font-sans);
+}
+nav.toc h2 {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin: 0 0 12px;
+  font-weight: 500; /* SUSE Headlines must be Medium weight */
+}
+nav.toc a {
+  display: block;
+  padding: 5px 10px;
+  color: var(--ink);
+  text-decoration: none;
+  border-radius: 6px;
+}
+nav.toc a:hover {
+  background: var(--bg);
+  color: var(--accent);
+}
+nav.toc a .n {
+  display: inline-block;
+  width: 22px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+/* ---------- Main ---------- */
+main {
+  flex: 1;
+  min-width: 0;
+  padding: 40px 48px 80px;
+  text-align: left;
+}
+header.hero {
+  background: linear-gradient(135deg, var(--accent-dark), var(--accent));
+  color: #fff;
+  border-radius: 12px;
+  padding: 32px 36px;
+  margin-bottom: 36px;
+}
+header.hero h1 {
+  margin: 0 0 8px;
+  font-size: 30px;
+  font-weight: 500; /* SUSE Headlines must be Medium weight */
+}
+header.hero p {
+  margin: 6px 0;
+  opacity: 0.92;
+  max-width: 850px;
+}
+h2 {
+  font-size: 24px;
+  margin: 48px 0 16px;
+  padding-bottom: 8px;
+  border-bottom: 2px solid var(--border);
+  scroll-margin-top: 24px;
+  color: var(--accent-dark);
+  font-weight: 500; /* SUSE Headlines must be Medium weight */
+}
+h3 {
+  font-size: 18px;
+  margin: 28px 0 10px;
+  color: var(--accent-dark);
+  font-weight: 500; /* SUSE Headlines must be Medium weight */
+}
+h4 {
+  font-size: 15px;
+  margin: 20px 0 8px;
+  color: var(--accent-dark);
+  font-weight: 500;
+}
+p {
+  max-width: 900px;
+  text-align: left;
+}
+strong {
+  color: var(--accent-dark);
+}
+/* ---------- Cards (steps) ---------- */
+.step {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px 28px;
+  margin: 24px 0;
+  scroll-margin-top: 24px;
+}
+.step > h2 {
+  margin-top: 0;
+  border: none;
+  padding: 0;
+}
+.step-badge {
+  display: inline-block;
+  background: var(--accent);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 3px 10px;
+  border-radius: 999px;
+  margin-right: 10px;
+  vertical-align: middle;
+  text-transform: uppercase;
+}
+/* ---------- Code ---------- */
+pre {
+  background: var(--code-bg);
+  color: var(--code-ink);
+  padding: 16px 18px;
+  border-radius: 8px;
+  overflow-x: auto;
+  font-size: 13.5px;
+  line-height: 1.5;
+  max-width: 900px;
+  font-family: var(--font-mono);
+}
+code {
+  font-family: var(--font-mono);
+}
+p code,
+li code,
+td code {
+  background: #eafaf4; /* SUSE Jungle shade for inline code background */
+  color: var(--accent-dark); /* Pine */
+  padding: 2px 6px;
+  border-radius: 5px;
+  font-size: 0.9em;
+}
+/* ---------- Tables ---------- */
+table {
+  border-collapse: collapse;
+  width: 100%;
+  max-width: 940px;
+  margin: 16px 0;
+  font-size: 14px;
+  background: var(--card);
+}
+th,
+td {
+  border: 1px solid var(--border);
+  padding: 9px 12px;
+  text-align: left;
+  vertical-align: top;
+}
+th {
+  background: #eafaf4; /* SUSE Jungle shade */
+  font-weight: 500; /* SUSE Headings */
+  color: var(--accent-dark);
+}
+tr:nth-child(even) td {
+  background: #fafbfc;
+}
+/* ---------- Callouts ---------- */
+.callout {
+  border-radius: 8px;
+  padding: 14px 18px;
+  margin: 16px 0;
+  max-width: 900px;
+  font-size: 14.5px;
+}
+.callout.warn {
+  background: var(--warn-bg);
+  border-left: 4px solid var(--warn-border);
+}
+.callout.info {
+  background: var(--info-bg);
+  border-left: 4px solid var(--info-border);
+}
+.callout .tag {
+  font-weight: 700;
+  text-transform: uppercase;
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  display: block;
+  margin-bottom: 4px;
+}
+.callout.warn .tag {
+  color: #8e2810; /* SUSE Persimmon deep shade */
+}
+.callout.info .tag {
+  color: #192072; /* SUSE Midnight */
+}
+/* ---------- Diagram ---------- */
+.diagram {
+  background: var(--code-bg);
+  color: #90ebcd; /* SUSE Mint for diagram lines/text */
+  padding: 20px 24px;
+  border-radius: 8px;
+  overflow-x: auto;
+  font-size: 13.5px;
+  line-height: 1.45;
+  max-width: 900px;
+  font-family: var(--font-mono);
+}
+/* ---------- Figures (rendered graphs) ---------- */
+figure.graph {
+  margin: 20px 0;
+  max-width: 960px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+}
+figure.graph img {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+figure.graph figcaption {
+  color: var(--muted);
+  font-size: 13px;
+  margin-top: 8px;
+}
+/* ---------- Captions & links ---------- */
+p.caption {
+  color: var(--muted);
+  font-size: 14px;
+  margin: 28px 0 6px;
+}
+p.caption strong {
+  color: var(--ink);
+}
+main a {
+  color: #192072;
+  text-decoration: none;
+}
+main a:hover {
+  text-decoration: underline;
+}
+/* ---------- Misc ---------- */
+.ok {
+  color: var(--ok);
+  font-weight: 600;
+}
+hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 40px 0;
+}
+footer {
+  color: var(--muted);
+  font-size: 13px;
+  text-align: left;
+  margin-top: 60px;
+}
+@media (max-width: 900px) {
   nav.toc {
-    width: 280px;
-    flex-shrink: 0;
-    position: sticky;
-    top: 0;
-    height: 100vh;
-    overflow-y: auto;
-    padding: 24px 16px;
-    background: var(--card);
-    border-right: 1px solid var(--border);
-    font-size: 14px;
-    font-family: var(--font-sans);
+    display: none;
   }
-  nav.toc h2 {
-    font-size: 13px;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--muted);
-    margin: 0 0 12px;
-    font-weight: 500; /* SUSE Headlines must be Medium weight */
+  main {
+    padding: 20px;
   }
-  nav.toc a {
-    display: block;
-    padding: 5px 10px;
-    color: var(--ink);
-    text-decoration: none;
-    border-radius: 6px;
-  }
-  nav.toc a:hover { background: var(--bg); color: var(--accent); }
-  nav.toc a .n {
-    display: inline-block;
-    width: 22px;
-    color: var(--muted);
-    font-variant-numeric: tabular-nums;
-  }
-  /* ---------- Main ---------- */
-  main { flex: 1; min-width: 0; padding: 40px 48px 80px; text-align: left; }
-  header.hero {
-    background: linear-gradient(135deg, var(--accent-dark), var(--accent));
-    color: #fff;
-    border-radius: 12px;
-    padding: 32px 36px;
-    margin-bottom: 36px;
-  }
-  header.hero h1 {
-    margin: 0 0 8px;
-    font-size: 30px;
-    font-weight: 500; /* SUSE Headlines must be Medium weight */
-  }
-  header.hero p { margin: 6px 0; opacity: 0.92; max-width: 850px; }
-  h2 {
-    font-size: 24px;
-    margin: 48px 0 16px;
-    padding-bottom: 8px;
-    border-bottom: 2px solid var(--border);
-    scroll-margin-top: 24px;
-    color: var(--accent-dark);
-    font-weight: 500; /* SUSE Headlines must be Medium weight */
-  }
-  h3 {
-    font-size: 18px;
-    margin: 28px 0 10px;
-    color: var(--accent-dark);
-    font-weight: 500; /* SUSE Headlines must be Medium weight */
-  }
-  h4 {
-    font-size: 15px;
-    margin: 20px 0 8px;
-    color: var(--accent-dark);
-    font-weight: 500;
-  }
-  p { max-width: 900px; text-align: left; }
-  strong { color: var(--accent-dark); }
-  /* ---------- Cards (steps) ---------- */
-  .step {
-    background: var(--card);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 24px 28px;
-    margin: 24px 0;
-    scroll-margin-top: 24px;
-  }
-  .step > h2 { margin-top: 0; border: none; padding: 0; }
-  .step-badge {
-    display: inline-block;
-    background: var(--accent);
-    color: #fff;
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    padding: 3px 10px;
-    border-radius: 999px;
-    margin-right: 10px;
-    vertical-align: middle;
-    text-transform: uppercase;
-  }
-  /* ---------- Code ---------- */
-  pre {
-    background: var(--code-bg);
-    color: var(--code-ink);
-    padding: 16px 18px;
-    border-radius: 8px;
-    overflow-x: auto;
-    font-size: 13.5px;
-    line-height: 1.5;
-    max-width: 900px;
-    font-family: var(--font-mono);
-  }
-  code {
-    font-family: var(--font-mono);
-  }
-  p code, li code, td code {
-    background: #eafaf4; /* SUSE Jungle shade for inline code background */
-    color: var(--accent-dark); /* Pine */
-    padding: 2px 6px;
-    border-radius: 5px;
-    font-size: 0.9em;
-  }
-  /* ---------- Tables ---------- */
-  table {
-    border-collapse: collapse;
-    width: 100%;
-    max-width: 940px;
-    margin: 16px 0;
-    font-size: 14px;
-    background: var(--card);
-  }
-  th, td {
-    border: 1px solid var(--border);
-    padding: 9px 12px;
-    text-align: left;
-    vertical-align: top;
-  }
-  th {
-    background: #eafaf4; /* SUSE Jungle shade */
-    font-weight: 500; /* SUSE Headings */
-    color: var(--accent-dark);
-  }
-  tr:nth-child(even) td { background: #fafbfc; }
-  /* ---------- Callouts ---------- */
-  .callout {
-    border-radius: 8px;
-    padding: 14px 18px;
-    margin: 16px 0;
-    max-width: 900px;
-    font-size: 14.5px;
-  }
-  .callout.warn { background: var(--warn-bg); border-left: 4px solid var(--warn-border); }
-  .callout.info { background: var(--info-bg); border-left: 4px solid var(--info-border); }
-  .callout .tag { font-weight: 700; text-transform: uppercase; font-size: 12px; letter-spacing: 0.05em; display: block; margin-bottom: 4px; }
-  .callout.warn .tag { color: #8e2810; /* SUSE Persimmon deep shade */ }
-  .callout.info .tag { color: #192072; /* SUSE Midnight */ }
-  /* ---------- Diagram ---------- */
-  .diagram {
-    background: var(--code-bg);
-    color: #90ebcd; /* SUSE Mint for diagram lines/text */
-    padding: 20px 24px;
-    border-radius: 8px;
-    overflow-x: auto;
-    font-size: 13.5px;
-    line-height: 1.45;
-    max-width: 900px;
-    font-family: var(--font-mono);
-  }
-  /* ---------- Figures (rendered graphs) ---------- */
-  figure.graph {
-    margin: 20px 0;
-    max-width: 960px;
-    background: var(--card);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 16px;
-  }
-  figure.graph img { width: 100%; height: auto; display: block; }
-  figure.graph figcaption {
-    color: var(--muted);
-    font-size: 13px;
-    margin-top: 8px;
-  }
-  /* ---------- Captions & links ---------- */
-  p.caption { color: var(--muted); font-size: 14px; margin: 28px 0 6px; }
-  p.caption strong { color: var(--ink); }
-  main a { color: #192072; text-decoration: none; }
-  main a:hover { text-decoration: underline; }
-  /* ---------- Misc ---------- */
-  .ok { color: var(--ok); font-weight: 600; }
-  hr { border: none; border-top: 1px solid var(--border); margin: 40px 0; }
-  footer { color: var(--muted); font-size: 13px; text-align: left; margin-top: 60px; }
-  @media (max-width: 900px) {
-    nav.toc { display: none; }
-    main { padding: 20px; }
-  }
+}
