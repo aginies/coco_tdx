@@ -318,7 +318,7 @@ def convert_md_to_html(md_path, html_path):
                                 continue
                         elif "Prerequisites" in title:
                                 html_body.append(
-                                        f'<h2 id="{h2_id}">Prerequisites <span style="font-weight:400;color:var(--muted);font-size:16px">(before any script command)</span></h2>\n'
+                                        f'<h2 id="{h2_id}">Prerequisites <span>(before any script command)</span></h2>\n'
                                 )
                         elif "Platform Validation" in title:
                                 html_body.append(
