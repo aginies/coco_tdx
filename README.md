@@ -1,5 +1,7 @@
 # Intel TDX Attestation — Step-by-Step Guide
 
+Version 1.0.0
+
 A guided walkthrough of how to set up and run Intel TDX attestation using
 `tdx-attest.sh`. SLES 16.1 is the proven reference path; the installation layer
 is distribution-pluggable (`lib/distros/`), but for now only SLES/openSUSE are
@@ -33,8 +35,61 @@ The whole process has two sides:
 **The goal in one sentence:** prove to a remote verifier that the guest is a
 genuine, untampered TDX Trust Domain, and only then hand it a secret.
 
+## Source Code
+
+The source code for these scripts is hosted on GitHub:
+
+- **Repository:** [https://github.com/aginies/coco_tdx](https://github.com/aginies/coco_tdx)
+- **Tarball:** [https://github.com/aginies/coco_tdx/releases](https://github.com/aginies/coco_tdx/releases) (when available)
+
+### Getting the scripts
+
+**Option 1 — Clone the repository (recommended for development or latest changes):**
+
+```bash
+git clone https://github.com/aginies/coco_tdx.git
+cd coco_tdx
+```
+
+This gives you the full history, all branches, and the ability to update with
+`git pull`.
+
+**Option 2 — Download a specific release tarball:**
+
+```bash
+VERSION="1.0.0"
+curl -LO "https://github.com/aginies/coco_tdx/releases/download/v${VERSION}/coco_tdx-${VERSION}.tar.gz"
+tar xzf coco_tdx-${VERSION}.tar.gz
+cd coco_tdx-${VERSION}
+```
+
+The tarball contains a versioned subdirectory with all scripts, the library,
+and documentation — ready to use without Git.
+
+**Option 3 — Download a single branch or tag:**
+
+```bash
+# Download a specific tag without cloning the full repo
+curl -LO "https://github.com/aginies/coco_tdx/archive/refs/tags/v1.0.0.tar.gz"
+tar xzf v1.0.0.tar.gz
+cd coco_tdx-1.0.0
+```
+
+### Quick start
+
+After obtaining the scripts, the recommended entry point is:
+
+```bash
+# Run the full capability check (no changes)
+./tdx-attest.sh check
+
+# One-shot setup of the entire stack
+sudo ./tdx-attest.sh all --guest-iso /path/to/SLE-16.1.iso
+```
+
 ## Contents
 
+- [Source Code](#source-code)
 - [Prerequisites](#prerequisites-before-any-script-command)
 - [Platform Validation & Registration with pccs-check.sh](#platform-validation--registration-with-pccs-checksh)
 - [One-shot setup: tdx-attest.sh all](#one-shot-setup-tdx-attestsh-all)
@@ -322,9 +377,11 @@ sudo ./tdx-attest.sh setup-host
 
 > **Tip — local PCCS / air-gapped environments:**
 > When using a local caching PCCS instead of Intel PCS:
+>
 > ```bash
 > sudo ./tdx-attest.sh setup-host --collateral pccs --pccs-url http://<PCCS_HOST>:8081
 > ```
+>
 > For custom or self-signed HTTPS PCCS deployments, pass `--pccs-ca /path/to/pccs-root-ca.pem` (or `--insecure` to bypass TLS verification).
 
 **Verify:**
@@ -600,7 +657,7 @@ console.
 > **Tip — Guest IP auto-detection:**
 > When only one VM is running, subsequent commands (`setup-guest`, `attest`, `register-rv`, `secret-get`) will auto-detect the guest IP automatically if `--guest-ip` is omitted!
 
-4. **If you skipped key injection (fresh disk), inject it now:**
+1. **If you skipped key injection (fresh disk), inject it now:**
 
    ```bash
    sudo virt-customize -a /var/lib/libvirt/images/tdx-guest.qcow2 \
@@ -1208,7 +1265,8 @@ was verified" — that's why the script can use it as a bearer token in Step 9.
 
 ## License
 
-Copyright (C) 2026 aginies
+Copyright (C) 2026 aginies  
+Source: [https://github.com/aginies/coco_tdx](https://github.com/aginies/coco_tdx)
 
 This program is free software: you can redistribute it and/or modify it under
 the terms of the **GNU General Public License, version 3** as published by the
