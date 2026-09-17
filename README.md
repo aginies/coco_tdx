@@ -3,7 +3,7 @@
 Version 1.0.0
 
 A guided walkthrough of how to set up and run Intel TDX attestation using
-`tdx-attest.sh`. SLES 16.1 is the proven reference path; the installation layer
+`tdx-attest.sh`. SLES 16.1 is the reference path; the installation layer
 is distribution-pluggable (`lib/distros/`), but for now only SLES/openSUSE are
 implemented.
 
@@ -101,7 +101,7 @@ sudo ./tdx-attest.sh all --guest-iso /path/to/SLE-16.1.iso
 - [Step 6 — Install the guest OS (manual)](#step-6--install-the-guest-os-manual)
 - [Step 7 — Set up the guest (inside the TD)](#step-7--set-up-the-guest-inside-the-td)
 - [Step 8 — Perform remote attestation](#step-8--perform-remote-attestation)
-- [Step 9 — Secret delivery (the payoff)](#step-9--secret-delivery-the-payoff)
+- [Step 9 — Secret delivery](#step-9--secret-delivery)
 - [Step 10 — Verify everything is consistent (any time)](#step-10--verify-everything-is-consistent-any-time)
 - [Step 11 — Cleanup (when done)](#step-11--cleanup-when-done)
 - [Quick reference: the happy path](#quick-reference-the-happy-path)
@@ -120,7 +120,7 @@ sudo ./tdx-attest.sh all --guest-iso /path/to/SLE-16.1.iso
 | Intel CPU with TDX (Sapphire Rapids, Emerald Rapids, Xeon 6+) |
 | TDX enabled in BIOS (SEAM loader present) |
 | VT-x enabled in BIOS |
-| Linux host (SLES 16.1 is the proven target) |
+| Linux host (SLES 16.1 is the reference target) |
 | Internet access to Intel PCS |
 | `kvm_intel.tdx=1` (or `=Y`) in kernel command line (add in GRUB, then reboot) |
 
@@ -138,7 +138,7 @@ If BIOS TDX is off, nothing later will work — the CPU will not report
 
 ## Platform Validation & Registration with pccs-check.sh
 
-**Optional — you can skip this for now.** You only need it if a later step
+**Optional — you can skip this section.** You only need it if a later step
 reports a PCK certificate `404` (platform not registered). It validates that
 your platform's collateral is healthy: that Intel PCS serves a valid TCB
 status for your processor, that no relevant keys are revoked, and that your
@@ -498,7 +498,7 @@ sudo ./tdx-attest.sh setup-trustee
 
 5. **Writes the resource policy (Rego).**
    - *Why:* this policy decides *which* attested clients may fetch *which*
-     secrets. ⚠️ The script writes an **allow-all** policy — a lab default.
+     secrets. **Warning:** the script writes an **allow-all** policy — a lab default.
      For production, gate it on real claims (e.g. `tdx.report.mrtd`).
 
 6. **Writes the three config files:**
@@ -584,7 +584,7 @@ sudo ./tdx-attest.sh setup-vm --guest-iso /path/to/SLE-16.1.iso
    | `<vsock model='virtio'>` | The only channel for the TD to reach QGS for quote signing. |
    | `<pm><suspend-to-mem/disk enabled='no'>` | TDX TDs cannot suspend/hibernate — the saved image would be unmeasured/unencrypted. |
    | (no `<memoryBacking>`, no `<ioapic>`) | libvirt auto-adds memfd backing + split irqchip for TDX; setting them explicitly breaks launch. |
-   | virtio video + serial console | Proven path for the ISO installer to actually appear on a TDX TD. |
+   | virtio video + serial console | The display path that works for the ISO installer on a TDX TD. |
 
 4. **Generates an SSH key** (`ssh-keygen -t ed25519`) if absent.
    - *Why:* all later steps drive the guest passwordlessly over SSH.
@@ -637,7 +637,7 @@ console.
    virsh console tdx-guest
    ```
 
-   - *Why console (not VNC):* virtio video + serial is the proven display path
+   - *Why console (not VNC):* virtio video + serial is the display path that works
      on a TDX TD; the installer output appears here.
 
 2. **Install SLES 16.1** from the ISO. Use the default kernel (6.1+ is required
@@ -655,7 +655,7 @@ console.
      this IP for SSH.
 
 > **Tip — Guest IP auto-detection:**
-> When only one VM is running, subsequent commands (`setup-guest`, `attest`, `register-rv`, `secret-get`) will auto-detect the guest IP automatically if `--guest-ip` is omitted!
+> When only one VM is running, subsequent commands (`setup-guest`, `attest`, `register-rv`, `secret-get`) will auto-detect the guest IP if `--guest-ip` is omitted.
 
 1. **If you skipped key injection (fresh disk), inject it now:**
 
@@ -870,54 +870,50 @@ image; RTMR 2/3 are where boot and runtime activity shows up.
 
 ### Understanding `ear.status: warning` & the RTMR 2 mismatch
 
-You may see `ear.status: warning` instead of `affirming`. The overall EAR
-status is the **worst tier** among the AR4SI trust-vector claims (hardware,
-configuration, executables, …). Here `hardware` and `configuration` are
-`affirming` (tier 2), but **`executables` is tier 33 (Warning)**, which drags
-the whole status down to `warning`.
+You may see `ear.status: warning` instead of `affirming`. The cause chain:
 
-**Why `executables` (RTMR 2) mismatches — the real cause:**
+1. **EAR status = the worst of its component claims.** The AR4SI trust vector
+   reports `hardware`, `configuration`, and `executables` separately, and the
+   overall status is the worst of them. Here `hardware` and `configuration`
+   are fine, but `executables` is tier 33 (Warning), which drags the whole
+   status down.
 
-Trustee 0.20's default policy scores `executables` by checking that
-`rtmr_1` *and* `rtmr_2` match approved reference values in RVPS. The problem
-is that **the quote generator itself extends RTMR 2 (and RTMR 3) on every
-run**. `test_tdx_attest` — the DCAP test program this script uses to mint
-quotes — deliberately exercises the extend path (its binary contains
-`tdx_att_extend` and "Successfully extended rtmr[2]/[3]"). So every fresh
-quote carries a *new* `rtmr_2`, and a separately-enrolled reference value can
-never match it across runs.
+2. **`executables` requires RTMR 2 to match an enrolled reference value.**
+   Trustee 0.20's default policy scores `executables` by checking that
+   `rtmr_1` and `rtmr_2` match approved values in the RVPS.
 
-> **Not CCEL/IMA.** The guest does have IMA/CCEL present, but it is *not*
-> actively measuring (`/sys/kernel/security/ima/runtime_measurements_count`
-> stays flat, the IMA policy is empty, and the ACPI CCEL table is a bare
-> header). So SSH logins / PAM are **not** what extends RTMR 2 here — the
-> quote tool is. (In a CCEL/IMA guest that *does* measure, RTMR 2 would also
-> evolve at runtime; the fix below handles both.)
+3. **But the quote tool changes RTMR 2 on every run.** `test_tdx_attest` —
+   the DCAP program this script uses to mint quotes — deliberately exercises
+   the extend path (its binary contains `tdx_att_extend` and "Successfully
+   extended rtmr[2]/[3]"). So every fresh quote carries a *different*
+   `rtmr_2`, and a value enrolled from an earlier quote can never match it.
 
-**The fix — same-quote re-evaluation:**
+In short: the mismatch is inherent to the quote tool, not a guest or
+configuration problem.
 
-The script decouples quote *generation* from quote *evaluation*:
-`attest_evaluate_quote "<base64>"` evaluates a **given** quote against
-CoCo-AS (no guest round-trip), and `attest_get_ear_token` fetches a fresh
-quote, stashes it in `LAST_QUOTE_B64`, then evaluates it. When `--register-rv`
-is set, after enrolling the reference values the script re-evaluates **the
-same quote it just registered** (`attest_evaluate_quote "$LAST_QUOTE_B64"`)
-instead of minting a new one. That quote's `rtmr_2` matches the value just
-enrolled, so `executables` drops to tier 4 (`APPROVED_BOOT`) and
-`ear.status` becomes **`affirming`**.
+**The fix — evaluate the same quote you just enrolled:**
 
-**Known limitation:** because `test_tdx_attest` re-extends RTMR 2 on *every*
-run, a plain `attest` (fresh quote) still reports `warning` — only
-`attest --register-rv` (register + re-evaluate the same quote) shows
-`affirming`. For a *stable* `affirming` on plain `attest` you'd need a quote
-generator that does **not** extend RTMRs (e.g. a minimal
-`tdx_att_get_report`-only tool), so RTMR 2 is pinned at boot.
+The key idea: if you enroll reference values from a quote and then evaluate
+*that same quote*, its `rtmr_2` matches by construction. With `--register-rv`,
+the script does exactly this — after enrolling, it re-evaluates the stored
+quote instead of minting a new one. (Implementation: `attest_evaluate_quote
+"<base64>"` evaluates a given quote with no guest round-trip;
+`attest_get_ear_token` stashes the fresh quote in `LAST_QUOTE_B64` before
+evaluating.)
 
-**Alternative method (same goal):**
-The in-guest `kbs-client` (Step 9) performs this exact flow automatically —
-quote → KBS → CoCo-AS → EAR token — as part of fetching a secret. The
-standalone `attest` command exists to verify the attestation path *on its
-own*, before involving secrets.
+Result: `executables` drops to tier 4 (`APPROVED_BOOT`) and `ear.status`
+becomes **`affirming`**.
+
+**Known limitation:** plain `attest` mints a fresh quote, which extends RTMR 2
+again — so it still reports `warning`. Only `attest --register-rv` (enroll +
+re-evaluate the same quote) shows `affirming`. A *stable* `affirming` on plain
+`attest` would require a quote generator that does **not** extend RTMRs (e.g.
+a minimal `tdx_att_get_report`-only tool), so RTMR 2 stays pinned at boot.
+
+**Alternative (same goal):** the in-guest `kbs-client` (Step 9) runs this
+exact flow automatically — quote → KBS → CoCo-AS → EAR token — as part of
+fetching a secret. The standalone `attest` command exists to verify the
+attestation path on its own, before involving secrets.
 
 **If it fails:**
 
@@ -930,7 +926,7 @@ TCB status outdated, PCCS / Intel PCS unreachable.
 
 ---
 
-## Step 9 — Secret delivery (the payoff)
+## Step 9 — Secret delivery
 
 This demonstrates the full purpose of attestation: **a secret is released only
 to a guest that has proven it is a genuine TD.**
@@ -1004,7 +1000,7 @@ attestation silently. `verify` cross-checks:
 - JWKS file and KBS admin key are wired,
 - all 4 stack services active (`qgsd`, `grpc-as`, `kbs`, `rvps`; `trustee.service` is intentionally disabled), both ports listening (`3000`, `8080`),
 - grpc-as libraries resolve (`ldd`),
-- the VM really has `launchSecurity type='tdx'` + ROM loader + vsock,
+- the VM has `launchSecurity type='tdx'` + ROM loader + vsock,
 - guest `kbs-client` has the TDX attester feature compiled in (when reachable via SSH).
 
 Run it after any manual change, and whenever attestation stops working.
@@ -1182,7 +1178,7 @@ the diagrams below are rendered as SVG so they survive HTML conversion.
 | EDK2 | EFI Development Kit 2 | Open-source UEFI/BIOS implementation |
 | UEFI | Unified Extensible Firmware Interface | Modern firmware interface replacing BIOS |
 | RPM | RPM Package Manager | Package format used by SUSE/RHEL distributions |
-| SLES | SUSE Linux Enterprise Server | The proven reference distribution for this guide |
+| SLES | SUSE Linux Enterprise Server | The reference distribution for this guide |
 | IMA | Integrity Measurement Architecture | Linux LSM for measuring file integrity |
 | EVM | Extended Verification Module | Linux extension of IMA that verifies file integrity at access time |
 | LSM | Linux Security Module | Kernel framework for security policies |
