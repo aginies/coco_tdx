@@ -144,6 +144,15 @@ check_qemu() {
     fi
 }
 
+check_virt_customize() {
+    if command -v virt-customize >/dev/null 2>&1; then
+        record "PASS" "virt-customize available (guestfs-tools)"
+    else
+        record "WARN" "virt-customize not installed (guestfs-tools missing)" \
+            "$(distro_pkg_manager) in $(distro_pkgs virt_customize) (needed for SSH key injection in setup-vm)"
+    fi
+}
+
 check_qemu_tdx() {
     if ! command -v qemu-system-x86_64 >/dev/null 2>&1; then
         record "WARN" "QEMU TDX machine support: skipped (qemu missing)"
@@ -433,13 +442,14 @@ cmd_register_platform() {
 cmd_check() {
     log "=== TDX host capability check ==="
     step "Probe host for TDX readiness (read-only, no changes made)" \
-        "Checks CPU/BIOS TDX, KVM, libvirt, QEMU, kernel module, DCAP pkgs, QGS/Trustee services, ports, collateral source (PCS/PCCS) reachability."
+        "Checks CPU/BIOS TDX, KVM, libvirt, QEMU, guestfs-tools, kernel module, DCAP pkgs, QGS/Trustee services, ports, collateral source (PCS/PCCS) reachability."
     CHECK_RESULTS=()
 
     check_cpu_tdx
     check_kvm
     check_libvirt
     check_qemu
+    check_virt_customize
     check_qemu_tdx
     check_ovmf_tdx
     check_host_tdx

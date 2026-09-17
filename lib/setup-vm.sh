@@ -327,14 +327,16 @@ extract_installer_media() {
         fi
     done
     if [[ -z "${ksrc}" || ! -f "${mnt}/${isrc}" ]]; then
-        umount "${mnt}" 2>/dev/null; rmdir "${mnt}"
+        umount "${mnt}" 2>/dev/null
+        rmdir "${mnt}"
         die "No installer kernel found in the ISO (looked in boot/x86_64/loader and images/pxeboot)."
     fi
     INSTALLER_KERNEL="/var/lib/libvirt/boot/${VM_DISPLAY_NAME}-installer-kernel"
     INSTALLER_INITRD="/var/lib/libvirt/boot/${VM_DISPLAY_NAME}-installer-initrd"
     cp "${mnt}/${ksrc}" "${INSTALLER_KERNEL}"
     cp "${mnt}/${isrc}" "${INSTALLER_INITRD}"
-    umount "${mnt}" 2>/dev/null; rmdir "${mnt}"
+    umount "${mnt}" 2>/dev/null
+    rmdir "${mnt}"
     log "Installer kernel/initrd extracted: ${INSTALLER_KERNEL} (+initrd)"
     log "(both files can be removed once the OS is installed)"
 }
@@ -608,13 +610,14 @@ inject_ssh_key_disk() {
         run virt-customize -a "$VM_DISK_PATH" \
             --run-command "mkdir -p /root/.ssh && chmod 700 /root/.ssh" \
             --run-command "touch /root/.ssh/authorized_keys; grep -qxF '${pub_key}' /root/.ssh/authorized_keys || echo '${pub_key}' >> /root/.ssh/authorized_keys; chmod 600 /root/.ssh/authorized_keys" \
+            --run-command "mkdir -p /etc/ssh/sshd_config.d && printf 'PermitRootLogin yes\n' > /etc/ssh/sshd_config.d/root.conf && chmod 644 /etc/ssh/sshd_config.d/root.conf" \
             --run-command "mkdir -p /etc/systemd/system && for t in sleep.target suspend.target hibernate.target hybrid-sleep.target; do ln -sf /dev/null /etc/systemd/system/\$t; done" \
             --run-command "mkdir -p /etc/systemd/logind.conf.d && printf '[Login]\nHandleSuspendKey=ignore\nHandleHibernateKey=ignore\nHandleLidSwitch=ignore\n' > /etc/systemd/logind.conf.d/tdx-no-suspend.conf"
         log "SSH key injected (user: ${GUEST_USER})"
         log "Suspend/hibernate disabled in guest image (TDX requirement)"
     else
-        warn "virt-customize not available ($(distro_pkg_manager) in $(distro_pkgs guest_libs))"
-        warn "Inject the SSH key manually after first boot, or use the console."
+        warn "virt-customize not available — SSH key was NOT injected. Install $(distro_pkgs virt_customize) ($(distro_pkg_manager)) and re-run setup-vm, or inject manually:"
+        warn "  virt-customize -a ${VM_DISK_PATH} --ssh-inject ${GUEST_USER}:file:${SSH_KEY}.pub"
     fi
 }
 
@@ -697,6 +700,7 @@ Reinstall qemu with TDX target (package: $(distro_pkgs qemu))."
     fi
 
     ensure_libvirt
+    ensure_virt_customize
 
     if virsh dominfo "$VM_DISPLAY_NAME" >/dev/null 2>&1; then
         warn "VM '${VM_DISPLAY_NAME}' already exists."

@@ -395,6 +395,19 @@ Install the QEMU driver ($(distro_pkg_manager) in $(distro_pkgs libvirt))
 and check: systemctl status virtqemud.socket virtqemud.service"
 }
 
+# setup-vm needs virt-customize (guestfs-tools) to inject the SSH key into
+# the guest disk offline. A TDX guest has no host-side console, so a missing
+# tool here would leave the VM unreachable — install it instead of degrading
+# to a manual step.
+ensure_virt_customize() {
+    command -v virt-customize >/dev/null 2>&1 && return 0
+    log "virt-customize missing — installing $(distro_pkgs virt_customize)"
+    install_pkgs $(distro_pkgs virt_customize)
+    command -v virt-customize >/dev/null 2>&1 ||
+        die "virt-customize still not available after install.
+Install $(distro_pkgs virt_customize) manually ($(distro_pkg_manager)), then re-run."
+}
+
 detect_guest_ip() {
     [[ -n "$GUEST_IP" ]] && return 0
     if ! command -v virsh >/dev/null 2>&1; then
