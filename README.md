@@ -584,10 +584,12 @@ sudo ./tdx-attest.sh setup-vm --guest-iso /path/to/SLE-16.1.iso
    - **virt-install engine (default when `virt-install` is installed):**
      `virt-install --name … --memory … --vcpus … --disk … --cpu
      host-passthrough --network network=default,model=virtio --graphics
-     vnc,listen=… --video virtio --boot fd --start-paused -bios <TDX-OVMF>
+     vnc,listen=… --video virtio --boot fd <firmware-flag> <TDX-OVMF>
      --qemu-commandline="-object tdx-guest,id=tdx -machine
-     confidential-guest-support=tdx" --cdrom <ISO>`. The domain is created
-     *paused*, destroyed, re-defined with a small Python XML patch that adds
+     confidential-guest-support=tdx" --cdrom <ISO>` (the firmware flag is
+     auto-detected from `virt-install --help`: `--bios`/`-bios`/`--firmware`
+     depending on the version). The domain is created and started, then
+     destroyed, re-defined with a small Python XML patch that adds
      the SUSE/TDX-specific bits virt-install has no flags for, then started —
      so everything is in effect from the first boot. This mirrors the proven
      working virt-install TDX config.

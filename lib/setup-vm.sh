@@ -249,10 +249,10 @@ choose_vm_creator() {
 }
 
 # Build the virt-install command in the global VIRT_INSTALL_CMD array.
-# The domain is created paused (--start-paused): cmd_setup_vm destroys it,
+# virt-install defines AND starts the domain; cmd_setup_vm then destroys it,
 # applies the TDX XML patch (launchSecurity policy/QGS, vsock, memtune,
-# resource partition, pm), re-defines and starts it — so all TDX bits are
-# in effect from the very first boot.
+# resource partition, pm), re-defines and starts it again — so all TDX bits
+# are in effect from a clean boot (the installer just reboots).
 build_virt_install_cmd() {
     local disk_spec="path=${VM_DISK_PATH},format=qcow2"
     if [[ ! -f "${VM_DISK_PATH}" ]]; then
@@ -270,11 +270,10 @@ build_virt_install_cmd() {
         --video virtio
         --boot fd
         --noautoconsole
-        --start-paused
         --wait 1
     )
     if ((VM_NO_TDX)); then
-        # No -bios: libvirt firmware autoselection picks pflash OVMF + NVRAM.
+        # No firmware flag: libvirt firmware autoselection picks pflash OVMF + NVRAM.
         :
     else
         local ovmf_hit ovmf_bin=""
@@ -284,14 +283,38 @@ build_virt_install_cmd() {
         if [[ -z "${ovmf_bin}" ]]; then
             die "No TDX OVMF firmware found; cannot build virt-install command."
         fi
-        # -bios -> <loader type='rom' format='raw'> (TDX requires a ROM loader,
-        # never pflash). The tdx-guest object + confidential-guest-support
-        # machine flag go via qemu-commandline (mirrors the proven working
-        # virt-install TDX config).
-        cmd+=(-bios "${ovmf_bin}")
+        # TDX requires a ROM loader (<loader type='rom'>), never pflash. The
+        # firmware flag name differs across virt-install versions, so probe
+        # --help and pick the one this build supports.
+        local vi_help="" firmware_args=()
+        if virt_install_available; then
+            vi_help=$(virt-install --help 2>&1) || vi_help=""
+            if grep -qE '(^|[[:space:]])--bios([[:space:]]|$)' <<<"${vi_help}"; then
+                firmware_args=(--bios "${ovmf_bin}")
+            elif grep -qE '(^|[[:space:]])-bios([[:space:]]|$)' <<<"${vi_help}"; then
+                firmware_args=(-bios "${ovmf_bin}")
+            elif grep -qE '(^|[[:space:]])--firmware([[:space:]]|$)' <<<"${vi_help}"; then
+                firmware_args=(--firmware "path=${ovmf_bin},type=bios")
+            else
+                die "virt-install exposes no recognizable firmware option (--bios/-bios/--firmware).
+Use --no-virt-install to fall back to the generated XML engine."
+            fi
+        else
+            # virt-install not installed (dry-run preview only): classic flag.
+            firmware_args=(-bios "${ovmf_bin}")
+        fi
+        cmd+=("${firmware_args[@]}")
+        # The tdx-guest object + confidential-guest-support machine flag go via
+        # qemu-commandline (mirrors the proven working virt-install TDX config).
         cmd+=(--qemu-commandline="-object tdx-guest,id=tdx -machine confidential-guest-support=tdx")
     fi
-    cmd+=(--cdrom "${GUEST_ISO}")
+    # Absolute ISO path: a relative --cdrom would be stored relative to the
+    # current working directory and break on later boots.
+    local iso_path="${GUEST_ISO}"
+    if [[ -f "${iso_path}" ]]; then
+        iso_path=$(realpath -- "${iso_path}" 2>/dev/null || echo "${iso_path}")
+    fi
+    cmd+=(--cdrom "${iso_path}")
     VIRT_INSTALL_CMD=("${cmd[@]}")
 }
 
@@ -508,9 +531,9 @@ Reinstall qemu with TDX target (package: $(distro_pkgs qemu))."
             log "virt-install will create qcow2 disk: ${VM_DISK_PATH} (${VM_DISK})"
             mkdir -p "$(dirname "$VM_DISK_PATH")"
         fi
-        log "Creating VM with virt-install (domain starts paused)"
+        log "Creating VM with virt-install (defines + starts the domain)"
         run "${VIRT_INSTALL_CMD[@]}"
-        log "Destroying paused domain to apply the TDX patch before first boot"
+        log "Destroying domain to apply the TDX patch, then re-starting (installer reboots)"
         run virsh destroy "$VM_DISPLAY_NAME" || true
         if ((disk_has_os)); then
             inject_ssh_key_disk
