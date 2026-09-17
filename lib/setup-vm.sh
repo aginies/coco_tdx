@@ -276,6 +276,34 @@ choose_vm_creator() {
     esac
 }
 
+# Is TCP port $1 in use (listening) on this host?
+vnc_port_in_use() {
+    if command -v ss >/dev/null 2>&1; then
+        ss -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]${1}$"
+    else
+        (exec 3<>"/dev/tcp/127.0.0.1/${1}") 2>/dev/null
+    fi
+}
+
+# Ensure the VNC port is actually free on the host; libvirt fails the whole
+# domain start with "Failed to reserve port" otherwise. If VNC_PORT is taken,
+# walk up to the next free port (override with --vnc-port).
+ensure_vnc_port() {
+    local port="$1" i
+    if ! vnc_port_in_use "${port}"; then
+        return 0
+    fi
+    for i in $(seq 1 10); do
+        if ! vnc_port_in_use "$((port + i))"; then
+            warn "VNC port ${port} is in use on the host; using $((port + i)) instead (override with --vnc-port)."
+            VNC_PORT=$((port + i))
+            return 0
+        fi
+    done
+    die "VNC port ${port} (and the next 10 ports) are in use on the host.
+Stop a VM using it or re-run with --vnc-port <PORT>."
+}
+
 # Build the virt-install command in the global VIRT_INSTALL_CMD array.
 # virt-install defines AND starts the domain; cmd_setup_vm then destroys it,
 # applies the TDX XML patch (launchSecurity policy/QGS, vsock, memtune,
@@ -555,6 +583,7 @@ cmd_setup_vm() {
     fi
     require_root
     require_cmd virsh qemu-img uuidgen ssh-keygen
+    ensure_vnc_port "${VNC_PORT}"
     log "=== Setting up ${VM_DISPLAY_NAME} (${VM_CPU} vCPU, ${VM_MEM} MiB) ==="
     if ((VM_NO_TDX)); then
         step "Create + define + start a NON-TDX libvirt guest (test mode)" \
