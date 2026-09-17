@@ -11,7 +11,7 @@
 #   <id>_pkg_install <p...>     -> install packages
 #   <id>_pkg_list_all           -> list installed packages (one per line)
 #   <id>_pkgs_<role>            -> package name list for a role (word list)
-#   <id>_qgs_bin / <id>_kbs_client_bin / <id>_grpc_as_bin  -> binary paths
+#   <id>_qgs_bin / <id>_kbs_bin / <id>_kbs_client_bin / <id>_grpc_as_bin  -> binary paths
 #   <id>_trustee_needs_symlinks -> 1/0 (SUSE ships /usr/libexec/trustee/<name>)
 #   <id>_ovmf_fwdir             -> QEMU firmware descriptor dir
 #   <id>_ovmf_tdx_probe         -> echo "descriptor|binary" of a TDX OVMF
@@ -69,6 +69,10 @@ distro_pkgs() {
 }
 distro_qgs_bin() {
     local v="${DISTRO_ID}_qgs_bin"
+    echo "${!v:-}"
+}
+distro_kbs_bin() {
+    local v="${DISTRO_ID}_kbs_bin"
     echo "${!v:-}"
 }
 distro_kbs_client_bin() {

@@ -28,6 +28,7 @@ sles_pkgs_grpcurl="grpcurl"
 
 # SUSE packaging layout.
 sles_qgs_bin="/usr/libexec/qgs"
+sles_kbs_bin="/usr/libexec/kbs" # symlink to /usr/libexec/trustee/kbs (created by setup)
 sles_kbs_client_bin="/usr/libexec/trustee/kbs-client"
 sles_grpc_as_bin="/usr/libexec/grpc-as"
 sles_trustee_needs_symlinks=1 # units reference /usr/libexec/<name>, pkg ships /usr/libexec/trustee/<name>

@@ -553,7 +553,10 @@ EOF
         log "Waiting for KBS to listen on ${KBS_PORT}"
         if wait_for_port 127.0.0.1 "${KBS_PORT}" 30; then
             log "Uploading resource policy to KBS"
-            run "$kbs_client_bin" --url "$(kbs_url)" config \
+            # Local upload: this runs on the host itself, so use 127.0.0.1
+            # (kbs_url() resolves to the libvirt NAT gateway IP, reachable
+            # only from guests, not from the host).
+            run "$kbs_client_bin" --url "http://127.0.0.1:${KBS_PORT}" config \
                 set-resource-policy --policy-file "$KBS_POLICY" ||
                 warn "Policy upload failed; set it later with kbs-client set-resource-policy"
         else
