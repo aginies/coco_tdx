@@ -60,6 +60,11 @@ PCCS_ID=""
 USE_SECURE_CERT="auto"
 # Collateral source: pcs (method 1, global) or pccs (method 2, local cache).
 COLLATERAL_MODE="pcs"
+# Guest package repo for SGX/TDX attestation packages (SLE 16.1). For now the
+# packages are not in the default SLES 16.1 repos, so setup-guest adds this
+# repo to the guest, refreshes, and installs from it.
+SGX_REPO_URL="https://download.opensuse.org/repositories/Virtualization:/SGX/16.1/"
+SGX_REPO_NAME="SGX"
 # grpc-as defaults to 127.0.0.1:3000 when the config has no listen field (SUSE
 # package behavior). Override with --coco-as for other topologies.
 COCO_AS="127.0.0.1:3000"

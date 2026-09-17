@@ -1377,6 +1377,25 @@ See doc: tdx-guest-setup troubleshooting."
         ssh_guest "mkdir -p ${GUEST_WORKDIR}"
 
     log "Checking attestation libraries + KBS client in guest"
+    # The SGX/TDX attestation packages are not (yet) in the default SLES 16.1
+    # repos — add the Virtualization:SGX repo in the guest and refresh first.
+    log "Ensuring ${SGX_REPO_NAME} repository in guest: ${SGX_REPO_URL}"
+    ssh_guest "sudo bash -s" <<EOF
+set -e
+# 'zypper lr' prints a warning line before the table, so match the table row
+# shape ("<n> | <alias> |") rather than a bare column.
+if ! zypper lr | grep -Eq "^[0-9]+[[:space:]]*\|[[:space:]]*${SGX_REPO_NAME}[[:space:]]*\|"; then
+    zypper --non-interactive addrepo ${SGX_REPO_URL} ${SGX_REPO_NAME}
+fi
+# Pre-import the repository signing key so 'zypper refresh' does not prompt
+# for key acceptance (no TTY over ssh; a prompt aborts the refresh).
+key=\$(mktemp)
+if curl -fsSL ${SGX_REPO_URL}repodata/repomd.xml.key -o "\$key"; then
+    rpm --import "\$key"
+fi
+rm -f "\$key"
+zypper refresh
+EOF
     # shellcheck disable=SC2046  # deliberate word-splitting of the package list
     install_pkgs_guest $(guest_distro_pkgs guest_libs)
 
