@@ -805,12 +805,12 @@ sudo ./tdx-attest.sh setup-guest --guest-ip <GUEST_IP>
    test_tdx_attest   (in guest workdir /root/tdx-attest)
    ```
 
-   - *Why:* this is the DCAP test program. It requests a TD Report from
-     `/dev/tdx_guest`, sends it to QGS over vsock, and writes the signed
-     `quote.dat`. Success here proves the entire quote path works:
-     TD → vsock → QGS → signing.
-   - On failure, the script re-runs the pre-flight checks and shows you which
-     one(s) are red.
+    - *Why:* this is the DCAP test program. It requests a TD Report from
+      `/dev/tdx_guest`, sends it to QGS over vsock, and writes the signed
+      `quote.dat`. Success here proves the entire quote path works:
+      TD → vsock → QGS → signing.
+    - On failure, the script re-runs the pre-flight checks and shows you which
+      one(s) are red.
 
 **Verify (inside guest):**
 
