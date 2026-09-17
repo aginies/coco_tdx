@@ -483,13 +483,22 @@ sudo ./tdx-attest.sh setup-trustee
    - *Why:* fail now on missing shared libraries instead of a service that
      crashes at runtime with an obscure log.
 
-3. **Generates the CoCo-AS signer keypair (EC P-256) and derives the JWKS file.**
+3. **Generates the CoCo-AS signer keypair (EC P-256), the JWKS file, and a
+   self-signed X.509 certificate for the token's `x5c` chain.**
    - *Why:* CoCo-AS signs EAR tokens with this key. If no persistent signer is
      configured, grpc-as uses an *ephemeral* key — tokens become unverifiable
      and KBS rejects everything. This SLE build of grpc-as doesn't serve a
      `/.well-known/jwks.json` endpoint, so the script derives the JWKS
      manually from the public key (openssl → x/y coordinates → JSON). KBS is
      pointed at it via `file://` (it rejects plain `http://`).
+   - *Why also a certificate:* the token header embeds the signing key as a
+     `jwk`, and when it does, KBS **requires** a non-empty `x5c` chain that
+     chains to `attestation_token.trusted_certs_paths` — otherwise it rejects
+     the token ("neither trusted jwk set nor trusted pem public key works").
+     A bare public key as the AS `cert_path` yields an empty `x5c`, so the
+     script derives a self-signed cert from the signer key
+     (`/etc/trustee/as-signer.crt`), points `grpc-as.json` `cert_path` at it,
+     and lists it in `kbs.json` `trusted_certs_paths`.
 
 4. **Generates the KBS admin keypair (ed25519).**
    - *Why:* admin-mode operations (storing secrets, setting policy) authenticate
@@ -762,27 +771,35 @@ sudo ./tdx-attest.sh setup-guest --guest-ip <GUEST_IP>
    - *Why:* `test_tdx_attest` and `kbs-client` link against these to talk to
      `/dev/tdx_guest` and QGS.
 
-6. **Builds a TDX-enabled `kbs-client` on the host and ships it to the guest.**
-   - *Why (important):* the kbs-client in the SLE `trustee` package is
-     compiled **without** the TDX attester — it falls back to a fake "Sample
-     Attester" and real attestation fails. The script clones upstream Trustee
-     and runs `cargo build --features tdx-attester` on the host (where Rust
-     lives), then copies the binary into the guest.
-   - *Why build on host, install on guest:* keeps the guest toolchain-free
-     while the running client stays inside the TD (its evidence must be a real
-     TD quote).
-   - *Note on Rust/cargo:* Building requires `cargo` on the host. If cargo is absent, the script warns and falls back to the package client (or you can use Step 9 Method B without Rust).
+6. **Verifies the packaged `kbs-client` has the TDX attester** (and removes
+   any stale source-built `/usr/local/bin/kbs-client-tdx`).
+   - *Why:* the SLE `trustee` package (≥ 0.21) ships a TDX-attester-capable
+     kbs-client at `/usr/libexec/trustee/kbs-client`, version-aligned with the
+     host verifier stack. Older builds lacked the TDX attester (fake "Sample
+     Attester"), and source builds from upstream master can drift ahead of the
+     packaged verifier — e.g. a newer attestation-agent whose CC event log the
+     host tdx-verifier cannot replay (RTMR[3] mismatch). If the package client
+     lacks the attester, the script dies with an upgrade hint instead of
+     falling back to a source build.
 
-7. **Writes the QCNL config inside the guest.**
+7. **Builds `tdx-quote-gen` in the guest** (from `tools/tdx-quote-gen.c`,
+   installing `gcc` if needed).
+   - *Why:* the distro's `test_tdx_attest` always mints quotes with *random*
+     report data (it never reads argv). Host-mode `secret-get` needs a quote
+     whose `report_data` is bound to a TEE public key, so the script builds a
+     minimal `tdx_att_get_quote` wrapper that takes the report data as an
+     argument. Installed at `/usr/local/bin/tdx-quote-gen`.
+
+8. **Writes the QCNL config inside the guest.**
    - *Why:* guest-side DCAP components also need to know the PCCS URL.
 
-8. **Runs 6 QGS pre-flight checks (on the host).**
+9. **Runs 6 QGS pre-flight checks (on the host).**
    - *Why:* `test_tdx_attest` fails *opaquely* if host-side QGS is
      misconfigured. Checking up front — QGS socket mode, socket file, qemu
      group, QCNL, PCCS reachability, VM vsock — pinpoints the exact red item
      instead of guessing.
 
-9. **Generates the first quote:**
+10. **Generates the first quote:**
 
    ```
    test_tdx_attest   (in guest workdir /root/tdx-attest)
@@ -958,8 +975,17 @@ becomes **`affirming`**.
 **Known limitation:** plain `attest` mints a fresh quote, which extends RTMR 2
 again — so it still reports `warning`. Only `attest --register-rv` (enroll +
 re-evaluate the same quote) shows `affirming`. A *stable* `affirming` on plain
-`attest` would require a quote generator that does **not** extend RTMRs (e.g.
-a minimal `tdx_att_get_report`-only tool), so RTMR 2 stays pinned at boot.
+`attest` would require using a quote generator that does **not** extend RTMRs
+(e.g. the `tdx-quote-gen` tool `setup-guest` installs, which only calls
+`tdx_att_get_quote`), so RTMR 2 stays pinned at boot.
+
+**Side effect on in-guest `secret-get`:** because `test_tdx_attest` extends
+RTMR 3 as well, the in-guest kbs-client's CC event log (which only covers
+boot-time RTMR 3) no longer replays — Method A then fails with
+`Eventlog does not pass measurement replay ... Register [index = 3]`. The
+script detects this and tells you to reboot the guest (resets the RTMRs)
+or use `secret-get --mode host`, which sends no event log and keeps working
+without a reboot.
 
 **Alternative (same goal):** the in-guest `kbs-client` (Step 9) runs this
 exact flow automatically — quote → KBS → CoCo-AS → EAR token — as part of
@@ -1008,19 +1034,24 @@ sudo ./tdx-attest.sh secret-get --guest-ip <GUEST_IP> --path default/test/secret
 - *Why this is the "real" method:* the client fetching the secret *is* the
   attested entity. The secret lands in the confidential TD.
 
-**Method B: host-side attestation + REST**
+**Method B: host-side RCAR with a host TEE key**
 
 ```bash
 sudo ./tdx-attest.sh secret-get --guest-ip <GUEST_IP> --path default/test/secret --mode host
 ```
 
-- *What happens:* the host fetches a fresh quote via SSH, submits it to
-  CoCo-AS with grpcurl, then calls the KBS REST API
-  (`GET /kbs/v0/resource/...`) with the EAR token as a bearer token.
-- *Why it exists:* no Rust build / in-guest client needed — useful for quick
-  tests and for demonstrating the protocol manually.
-- *Caveat:* the EAR token sits on the host, so anyone with it can fetch the
-  secret. Fine for labs; not for real secret gating.
+- *What happens:* the host generates an EC P-256 TEE key, has the guest mint
+  a quote bound to it (`report_data = sha384` of the runtime data, via
+  `tdx-quote-gen`), submits it to CoCo-AS with grpcurl (structured runtime
+  data carries the `tee-pubkey` claim KBS requires), then GETs the resource
+  from KBS and decrypts the JWE-encrypted response (ECDH-ES+A256KW/A256GCM)
+  locally with python3 (`cryptography` + `jwcrypto`).
+- *Why it exists:* no in-guest kbs-client needed. It also sends **no CC
+  event log**, so it works even after `attest`/`register-rv` extended the
+  guest's RTMRs at runtime — no guest reboot required (Method A needs a
+  reboot in that case, see below).
+- *Caveat:* the EAR token and the TEE private key sit on the host, so anyone
+  with them can fetch the secret. Fine for labs; not for real secret gating.
 
 **Expected output (both):**
 
@@ -1116,10 +1147,10 @@ sudo ./tdx-attest.sh secret-get --guest-ip <GUEST_IP> --path default/test/secret
 | `test_tdx_attest`: "Failed to get the report" | QGS misconfigured on host | `setup-guest` prints a 6-item pre-flight table — fix the red row |
 | Attestation: `ear.status: contraindicated` | RVPS values missing or mismatched | Run `sudo ./tdx-attest.sh attest --guest-ip <GUEST_IP> --register-rv` or check `journalctl -u grpc-as.service -n 50` |
 | Attestation: `ear.status: warning` | `rtmr_2` mismatch: the quote tool (`test_tdx_attest`) extends RTMR 2/3 on every run, so a fresh quote never matches the enrolled value | Hardware verification still passes (TCB UpToDate). To see a clean `affirming`, run `tdx-attest.sh attest --guest-ip <GUEST_IP> --register-rv` (same-quote re-evaluation). Plain `attest` stays `warning` until a non-extending quote tool is used. |
+| In-guest `secret-get`: `Eventlog does not pass measurement replay ... Register [index = 3]` | The guest's RTMR 3 was extended at runtime (by a previous `attest`/`register-rv` run), so the boot-time CC event log no longer replays | Reboot the guest (resets the RTMRs), or use `secret-get --mode host` (sends no event log — no reboot needed) |
+| KBS rejects tokens: `neither trusted jwk set nor trusted pem public key works` | Token header embeds a `jwk` but the `x5c` chain is empty or doesn't chain to `trusted_certs_paths` | `sudo ./tdx-attest.sh setup-trustee` (regenerates `/etc/trustee/as-signer.crt`, `grpc-as.json` `cert_path`, `kbs.json` `trusted_certs_paths`); or `verify` → JWKS rows |
 | `trustee.service` reports `inactive` / condition failed | The monolithic `trustee.service` is intentionally disabled in favor of individual modular units | Expected behavior. Verify the active modular services: `systemctl is-active grpc-as kbs rvps qgsd` |
-| `setup-guest` warns `cargo not found` on host | Rust toolchain missing on host | Install Rust/cargo on the host (`zypper in cargo` or `rustup`) so `setup-guest` can build the TDX-enabled `kbs-client`, or use `secret-get --mode host` which requires no guest-side client build |
-| KBS rejects tokens | JWKS missing or mismatched | `sudo ./tdx-attest.sh verify` → JWKS rows |
-| kbs-client warns "Sample Attester" | Package client lacks TDX attester | `sudo ./tdx-attest.sh setup-guest` (builds + ships TDX client) |
+| Guest kbs-client missing or lacks TDX attester | `trustee` package too old (< 0.21) | Install/upgrade the `trustee` package from the SGX repo, then re-run `sudo ./tdx-attest.sh setup-guest --guest-ip <GUEST_IP>` |
 | Guest can't reach KBS (secret-get times out) | Host firewall blocks 8080, wrong guest IP, or libvirt NAT issue | From the guest: `curl -sI http://<HOST_IP>:8080` — check the host firewall (`sudo firewall-cmd --list-ports`) and re-fetch the IP with `virsh net-dhcp-leases default` |
 | Local PCCS reports TLS certificate errors | Self-signed or private root CA not trusted | Pass `--pccs-ca /path/to/pccs-ca.pem` to `setup-host` or supply `--insecure` |
 | `grpcurl: command not found` | Auto-installed grpcurl not in PATH | The script installs it to `/usr/local/bin` (root) or `~/.local/bin` — check `echo $PATH`, or re-run `attest` as root so it lands in `/usr/local/bin` |
