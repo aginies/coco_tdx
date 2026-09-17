@@ -414,9 +414,12 @@ detect_guest_ip() {
         die "--guest-ip is required (virsh not available for auto-detection). Usage: ${SCRIPT_NAME} <cmd> --guest-ip <IP>"
     fi
     local running_vms
-    running_vms=$(virsh list --name 2>/dev/null | grep -v '^$')
+    # grep exits 1 on empty input (no running VMs / virsh failed); the empty
+    # check below handles that case, so don't let the ERR trap fire here.
+    running_vms=$(virsh list --name 2>/dev/null | grep -v '^$' || true)
     if [[ -z "$running_vms" ]]; then
-        die "No running VMs found. Start a VM first, or use --guest-ip <IP>."
+        warn "No VM is running (virsh list is empty)"
+        die "Start the guest VM first, or pass --guest-ip <IP>."
     fi
     echo ""
     echo "Running VMs:"
