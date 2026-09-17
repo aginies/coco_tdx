@@ -7,7 +7,12 @@ or other application using the libvirt API.
 
 <domain type='kvm'>
   <name>tdx-guest</name>
-  <uuid>ec906e59-b8c6-478c-b156-ff4fcd2ca60c</uuid>
+  <uuid>a3bb39d4-6f80-48fa-a895-93b56f1eac57</uuid>
+  <metadata xmlns:ns0="http://libosinfo.org/xmlns/libvirt/domain/1.0">
+    <ns0:libosinfo>
+      <ns0:os id="http://suse.com/sles/16.1"/>
+    </ns0:libosinfo>
+  </metadata>
   <memory unit='KiB'>16777216</memory>
   <currentMemory unit='KiB'>16777216</currentMemory>
   <memtune>
@@ -24,21 +29,20 @@ or other application using the libvirt API.
       <feature enabled='yes' name='secure-boot'/>
     </firmware>
     <loader type='rom' stateless='yes' format='raw'>/usr/share/qemu/ovmf-x86_64-tdx-secureboot.bin</loader>
-    <boot dev='cdrom'/>
-    <boot dev='hd'/>
+    <boot dev='fd'/>
   </os>
   <features>
     <acpi/>
     <apic/>
   </features>
-  <cpu mode='host-passthrough' check='none' migratable='off'/>
+  <cpu mode='host-passthrough' check='none' migratable='on'/>
   <clock offset='utc'>
     <timer name='rtc' tickpolicy='catchup'/>
     <timer name='pit' tickpolicy='delay'/>
     <timer name='hpet' present='no'/>
   </clock>
   <on_poweroff>destroy</on_poweroff>
-  <on_reboot>destroy</on_reboot>
+  <on_reboot>restart</on_reboot>
   <on_crash>destroy</on_crash>
   <pm>
     <suspend-to-mem enabled='no'/>
@@ -52,9 +56,13 @@ or other application using the libvirt API.
       <target dev='vda' bus='virtio'/>
       <address type='pci' domain='0x0000' bus='0x04' slot='0x00' function='0x0'/>
     </disk>
-    <controller type='sata' index='0'>
-      <address type='pci' domain='0x0000' bus='0x00' slot='0x1f' function='0x2'/>
-    </controller>
+    <disk type='file' device='cdrom'>
+      <driver name='qemu' type='raw'/>
+      <source file='/var/lib/libvirt/ISO/SLES-16.1-Full-x86_64-013-Snapshot.install.iso'/>
+      <target dev='sda' bus='sata'/>
+      <readonly/>
+      <address type='drive' controller='0' bus='0' target='0' unit='0'/>
+    </disk>
     <controller type='usb' index='0' model='qemu-xhci' ports='15'>
       <address type='pci' domain='0x0000' bus='0x02' slot='0x00' function='0x0'/>
     </controller>
@@ -99,11 +107,44 @@ or other application using the libvirt API.
       <target chassis='8' port='0x17'/>
       <address type='pci' domain='0x0000' bus='0x00' slot='0x02' function='0x7'/>
     </controller>
+    <controller type='pci' index='9' model='pcie-root-port'>
+      <model name='pcie-root-port'/>
+      <target chassis='9' port='0x18'/>
+      <address type='pci' domain='0x0000' bus='0x00' slot='0x03' function='0x0' multifunction='on'/>
+    </controller>
+    <controller type='pci' index='10' model='pcie-root-port'>
+      <model name='pcie-root-port'/>
+      <target chassis='10' port='0x19'/>
+      <address type='pci' domain='0x0000' bus='0x00' slot='0x03' function='0x1'/>
+    </controller>
+    <controller type='pci' index='11' model='pcie-root-port'>
+      <model name='pcie-root-port'/>
+      <target chassis='11' port='0x1a'/>
+      <address type='pci' domain='0x0000' bus='0x00' slot='0x03' function='0x2'/>
+    </controller>
+    <controller type='pci' index='12' model='pcie-root-port'>
+      <model name='pcie-root-port'/>
+      <target chassis='12' port='0x1b'/>
+      <address type='pci' domain='0x0000' bus='0x00' slot='0x03' function='0x3'/>
+    </controller>
+    <controller type='pci' index='13' model='pcie-root-port'>
+      <model name='pcie-root-port'/>
+      <target chassis='13' port='0x1c'/>
+      <address type='pci' domain='0x0000' bus='0x00' slot='0x03' function='0x4'/>
+    </controller>
+    <controller type='pci' index='14' model='pcie-root-port'>
+      <model name='pcie-root-port'/>
+      <target chassis='14' port='0x1d'/>
+      <address type='pci' domain='0x0000' bus='0x00' slot='0x03' function='0x5'/>
+    </controller>
+    <controller type='sata' index='0'>
+      <address type='pci' domain='0x0000' bus='0x00' slot='0x1f' function='0x2'/>
+    </controller>
     <controller type='virtio-serial' index='0'>
       <address type='pci' domain='0x0000' bus='0x03' slot='0x00' function='0x0'/>
     </controller>
     <interface type='network'>
-      <mac address='52:54:00:b7:fe:c2'/>
+      <mac address='52:54:00:66:b7:db'/>
       <source network='default'/>
       <model type='virtio'/>
       <address type='pci' domain='0x0000' bus='0x01' slot='0x00' function='0x0'/>
@@ -125,8 +166,8 @@ or other application using the libvirt API.
     </input>
     <input type='mouse' bus='ps2'/>
     <input type='keyboard' bus='ps2'/>
-    <graphics type='vnc' port='-1' autoport='yes' listen='127.0.0.1'>
-      <listen type='address' address='127.0.0.1'/>
+    <graphics type='vnc' port='-1' autoport='yes' listen='0.0.0.0'>
+      <listen type='address' address='0.0.0.0'/>
     </graphics>
     <audio id='1' type='none'/>
     <video>

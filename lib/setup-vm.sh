@@ -215,6 +215,34 @@ virt_install_available() {
     command -v virt-install >/dev/null 2>&1
 }
 
+# Major version of virt-install (e.g. "5.1.0" -> 5). 5.x is a breaking
+# release: --bios/-bios/--firmware were removed, --osinfo became mandatory,
+# and the raw --xml XPath option was added (used to inject the TDX ROM loader).
+virt_install_major() {
+    local ver
+    ver=$(virt-install --version 2>/dev/null | head -1 | grep -oE '^[0-9]+' || true)
+    echo "${ver:-0}"
+}
+
+# Derive a libosinfo ID from the guest ISO file name (virt-install 5.x
+# requires --osinfo). Prints nothing when the ISO name is not recognizable;
+# the caller then falls back to --osinfo detect=on,require=off.
+virt_install_osinfo() {
+    local base up
+    base=$(basename -- "${GUEST_ISO:-}")
+    up=$(tr '[:lower:]' '[:upper:]' <<<"${base}")
+    case "${up}" in
+    *SLES*16.1*) echo "sles16.1" ;;
+    *SLES*16*) echo "sles16" ;;
+    *SLES*15*SP7*) echo "sles15sp7" ;;
+    *SLES*15*SP6*) echo "sles15sp6" ;;
+    *SLES*15*SP5*) echo "sles15sp5" ;;
+    *LEAP*16.1*) echo "opensuse16.1" ;;
+    *LEAP*15.6*) echo "opensuse15.6" ;;
+    *) : ;;
+    esac
+}
+
 # Choose the VM creation engine: "virt" (virt-install) or "xml" (generated XML).
 # Falls back to XML when virt-install is unavailable, forced off, or when no
 # installer ISO is given (virt-install path attaches it via --cdrom).
@@ -258,6 +286,13 @@ build_virt_install_cmd() {
     if [[ ! -f "${VM_DISK_PATH}" ]]; then
         disk_spec="${disk_spec},size=${VM_DISK}"
     fi
+    local vi_major
+    vi_major=$(virt_install_major)
+    if ((vi_major >= 5)); then
+        # 5.x generic fallback (no OS detected) defaults to i440fx/ide/e1000/vga
+        # — pin the proven virtio disk explicitly.
+        disk_spec="${disk_spec},bus=virtio"
+    fi
     # shellcheck disable=SC2054  # false positive: multi-line array literal
     local cmd=(virt-install
         --name "${VM_DISPLAY_NAME}"
@@ -272,6 +307,18 @@ build_virt_install_cmd() {
         --noautoconsole
         --wait 1
     )
+    if ((vi_major >= 5)); then
+        # virt-install 5.x requires --osinfo. Derive a libosinfo ID from the
+        # ISO name when recognizable (and present in this virt-install's list),
+        # otherwise let virt-install detect it without failing.
+        local osinfo
+        osinfo=$(virt_install_osinfo)
+        if [[ -n "${osinfo}" ]] && virt-install --osinfo list 2>/dev/null | grep -qx "${osinfo}"; then
+            cmd+=(--osinfo "${osinfo}")
+        else
+            cmd+=(--osinfo detect=on,require=off)
+        fi
+    fi
     if ((VM_NO_TDX)); then
         # No firmware flag: libvirt firmware autoselection picks pflash OVMF + NVRAM.
         :
@@ -283,27 +330,48 @@ build_virt_install_cmd() {
         if [[ -z "${ovmf_bin}" ]]; then
             die "No TDX OVMF firmware found; cannot build virt-install command."
         fi
-        # TDX requires a ROM loader (<loader type='rom'>), never pflash. The
-        # firmware flag name differs across virt-install versions, so probe
-        # --help and pick the one this build supports.
-        local vi_help="" firmware_args=()
-        if virt_install_available; then
-            vi_help=$(virt-install --help 2>&1) || vi_help=""
-            if grep -qE '(^|[[:space:]])--bios([[:space:]]|$)' <<<"${vi_help}"; then
-                firmware_args=(--bios "${ovmf_bin}")
-            elif grep -qE '(^|[[:space:]])-bios([[:space:]]|$)' <<<"${vi_help}"; then
-                firmware_args=(-bios "${ovmf_bin}")
-            elif grep -qE '(^|[[:space:]])--firmware([[:space:]]|$)' <<<"${vi_help}"; then
-                firmware_args=(--firmware "path=${ovmf_bin},type=bios")
-            else
-                die "virt-install exposes no recognizable firmware option (--bios/-bios/--firmware).
-Use --no-virt-install to fall back to the generated XML engine."
-            fi
+        if ((vi_major >= 5)); then
+            # virt-install 5.x removed --bios/-bios/--firmware. TDX still
+            # requires a ROM loader (<loader type='rom'>), never pflash —
+            # inject it with the raw --xml XPath option, and pin the proven
+            # q35 machine type regardless of osinfo defaults.
+            cmd+=(--machine q35)
+            cmd+=(--xml xpath.create=./os/loader
+                --xml ./os/loader/@type=rom
+                --xml ./os/loader/@format=raw
+                --xml ./os/loader/@stateless=yes
+                --xml "xpath.set=./os/loader,xpath.value=${ovmf_bin}")
         else
-            # virt-install not installed (dry-run preview only): classic flag.
-            firmware_args=(-bios "${ovmf_bin}")
+            # TDX requires a ROM loader (<loader type='rom'>), never pflash. The
+            # firmware flag name differs across virt-install versions, so probe
+            # --help and pick the one this build supports.
+            local vi_help="" firmware_args=()
+            if virt_install_available; then
+                vi_help=$(virt-install --help 2>&1) || true
+                if grep -qE -- '--bios([=[:space:]]|$)' <<<"${vi_help}"; then
+                    firmware_args=(--bios "${ovmf_bin}")
+                elif grep -qE -- '(^|[[:space:]])-bios([=[:space:]]|$)' <<<"${vi_help}"; then
+                    firmware_args=(-bios "${ovmf_bin}")
+                elif grep -qE -- '--firmware([=[:space:]]|$)' <<<"${vi_help}"; then
+                    firmware_args=(--firmware "path=${ovmf_bin},type=bios")
+                else
+                    # Build the diagnostic first: a command substitution embedded
+                    # directly in a multi-line double-quoted die message is
+                    # fragile across bash versions.
+                    local fw_diag
+                    fw_diag=$(grep -inE 'bios|firmware' <<<"${vi_help}" | head -5 | sed 's/^/    /')
+                    [[ -n "${fw_diag}" ]] || fw_diag="    (none)"
+                    die "virt-install exposes no recognizable firmware option (--bios/-bios/--firmware).
+'virt-install --help' lines mentioning bios/firmware:
+${fw_diag}
+Check 'virt-install --help' / 'virt-install --version', or use --no-virt-install to fall back to the generated XML engine."
+                fi
+            else
+                # virt-install not installed (dry-run preview only): classic flag.
+                firmware_args=(-bios "${ovmf_bin}")
+            fi
+            cmd+=("${firmware_args[@]}")
         fi
-        cmd+=("${firmware_args[@]}")
         # The tdx-guest object + confidential-guest-support machine flag go via
         # qemu-commandline (mirrors the proven working virt-install TDX config).
         cmd+=(--qemu-commandline="-object tdx-guest,id=tdx -machine confidential-guest-support=tdx")
@@ -385,6 +453,25 @@ for tag in ('suspend-to-mem', 'suspend-to-disk'):
     if el is None:
         el = ET.SubElement(pm, tag)
     el.set('enabled', 'no')
+
+# 6. qemu:commandline: with <launchSecurity type='tdx'> present, libvirt
+#    itself adds the tdx-guest object + confidential-guest-support machine
+#    flag. The explicit -object/-machine args virt-install left in the
+#    qemu-commandline would duplicate them and break TD init (KVM_TDX_INIT_
+#    VCPU EINVAL), so strip that pair (keep any other commandline args).
+NS = '{http://libvirt.org/schemas/domain/qemu/1.0}'
+for cl in root.findall(NS + 'commandline'):
+    args = cl.findall(NS + 'arg')
+    for i, arg in enumerate(args):
+        v = arg.get('value', '')
+        if v in ('-object', '-machine') and i + 1 < len(args):
+            nv = args[i + 1].get('value', '')
+            if (v == '-object' and nv.startswith('tdx-guest,')) or \
+               (v == '-machine' and nv.startswith('confidential-guest-support=')):
+                cl.remove(arg)
+                cl.remove(args[i + 1])
+    if not cl.findall(NS + 'arg'):
+        root.remove(cl)
 
 tree.write(output_xml, xml_declaration=True, encoding='unicode')
 PYEOF
@@ -532,7 +619,18 @@ Reinstall qemu with TDX target (package: $(distro_pkgs qemu))."
             mkdir -p "$(dirname "$VM_DISK_PATH")"
         fi
         log "Creating VM with virt-install (defines + starts the domain)"
-        run "${VIRT_INSTALL_CMD[@]}"
+        if ! run "${VIRT_INSTALL_CMD[@]}"; then
+            # virt-install exits 1 when --wait times out while the domain is
+            # still running — expected here: the installer needs manual work
+            # and the domain is deliberately left up. Continue if it's alive.
+            local vi_state
+            vi_state=$(virsh domstate "$VM_DISPLAY_NAME" 2>/dev/null || true)
+            if [[ "${vi_state}" == "running" ]]; then
+                warn "virt-install exited non-zero (--wait timeout), but the domain is running. Continuing."
+            else
+                die "virt-install failed and the domain is not running (state: ${vi_state:-unknown}). See output above."
+            fi
+        fi
         log "Destroying domain to apply the TDX patch, then re-starting (installer reboots)"
         run virsh destroy "$VM_DISPLAY_NAME" || true
         if ((disk_has_os)); then
