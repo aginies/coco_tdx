@@ -304,11 +304,44 @@ ensure_vnc_port() {
 Stop a VM using it or re-run with --vnc-port <PORT>."
 }
 
+# Extract the SLE installer kernel/initrd from the ISO into persistent
+# files. virt-install's own --location extraction is temporary — it deletes
+# the files when it exits, leaving the domain XML pointing at ghosts. The
+# SLES 16.x layout is /boot/x86_64/loader/{linux,initrd}; older SLES/Leap
+# use /images/pxeboot/{vmlinuz,initrd}.
+# Sets INSTALLER_KERNEL / INSTALLER_INITRD. Requires root (loop mount).
+extract_installer_media() {
+    local iso="$1"
+    local mnt ksrc="" isrc=""
+    mnt=$(mktemp -d /mnt/tdx-iso-XXXXXX)
+    if ! mount -o loop,ro "${iso}" "${mnt}" 2>/dev/null; then
+        rmdir "${mnt}"
+        die "Cannot loop-mount the installer ISO to extract the installer kernel: ${iso}"
+    fi
+    local d
+    for d in "boot/x86_64/loader" "images/pxeboot"; do
+        if [[ -f "${mnt}/${d}/linux" || -f "${mnt}/${d}/vmlinuz" ]]; then
+            ksrc="${d}/$([[ -f "${mnt}/${d}/linux" ]] && echo linux || echo vmlinuz)"
+            isrc="${d}/initrd"
+            break
+        fi
+    done
+    if [[ -z "${ksrc}" || ! -f "${mnt}/${isrc}" ]]; then
+        umount "${mnt}" 2>/dev/null; rmdir "${mnt}"
+        die "No installer kernel found in the ISO (looked in boot/x86_64/loader and images/pxeboot)."
+    fi
+    INSTALLER_KERNEL="/var/lib/libvirt/boot/${VM_DISPLAY_NAME}-installer-kernel"
+    INSTALLER_INITRD="/var/lib/libvirt/boot/${VM_DISPLAY_NAME}-installer-initrd"
+    cp "${mnt}/${ksrc}" "${INSTALLER_KERNEL}"
+    cp "${mnt}/${isrc}" "${INSTALLER_INITRD}"
+    umount "${mnt}" 2>/dev/null; rmdir "${mnt}"
+    log "Installer kernel/initrd extracted: ${INSTALLER_KERNEL} (+initrd)"
+    log "(both files can be removed once the OS is installed)"
+}
+
 # Build the virt-install command in the global VIRT_INSTALL_CMD array.
-# virt-install defines AND starts the domain; cmd_setup_vm then destroys it,
-# applies the TDX XML patch (launchSecurity policy/QGS, vsock, memtune,
-# resource partition, pm), re-defines and starts it again — so all TDX bits
-# are in effect from a clean boot (the installer just reboots).
+# cmd_setup_vm runs it with --print-xml (XML generation only — the TDX
+# post-patch must be applied before the first boot), then defines + starts.
 build_virt_install_cmd() {
     local disk_spec="path=${VM_DISK_PATH},format=qcow2"
     local vi_major
@@ -430,12 +463,16 @@ Check 'virt-install --help' / 'virt-install --version', or use --no-virt-install
         # inside a TD drops into the firmware setup screen instead of
         # auto-booting the IDE cdrom (observed on tdxdev1: the identical
         # XML boots the CD in a non-TDX VM, but the TD sits at the OVMF
-        # setup UI). --location extracts the installer kernel/initrd from
-        # the ISO and boots them directly, bypassing firmware
-        # boot-device selection; the ISO stays attached as a cdrom for
-        # the installer to use as its source. console=ttyS0 puts the
-        # installer on the serial console — the reliable channel for a
-        # TD (the framebuffer is only visible via TDX screen sharing).
+        # setup UI). --location boots the installer kernel directly,
+        # bypassing firmware boot-device selection; the ISO stays
+        # attached as a cdrom for the installer to use as its source.
+        # NOTE: the kernel/initrd --location extracts are temp files that
+        # virt-install deletes on exit — cmd_setup_vm repoints the XML at
+        # the persistent copies made by extract_installer_media. (5.x has
+        # no --kernel/--initrd options to pass them directly.)
+        # console=ttyS0 puts the installer on the serial console — the
+        # reliable channel for a TD (the framebuffer is only visible via
+        # TDX screen sharing).
         cmd+=(--location "${iso_path}")
         cmd+=(--extra-args "console=ttyS0,115200")
     fi
@@ -455,8 +492,36 @@ import sys, xml.etree.ElementTree as ET
 input_xml, output_xml, qgs_socket = sys.argv[1], sys.argv[2], sys.argv[3]
 mem_hard_limit = int(sys.argv[4])
 ET.register_namespace('', '')
-tree = ET.parse(input_xml)
-root = tree.getroot()
+
+# virt-install 5.x --print-xml emits the domain TWICE: first the runtime
+# variant (with the one-shot <kernel>/<initrd>/<cmdline> installer boot,
+# cache="unsafe", and an <on_reboot>destroy</on_reboot> we do NOT want),
+# then the persistent variant (without the kernel, with <boot> order).
+# ElementTree rejects the concatenated output, so keep the first document
+# only and normalize it below.
+with open(input_xml) as fh:
+    content = fh.read()
+if content.count('<domain') > 1:
+    end = content.index('</domain>') + len('</domain>')
+    content = content[:end]
+root = ET.fromstring(content)
+
+# Drop <on_reboot>destroy</on_reboot> from the runtime variant: after the
+# install the guest must reboot into the installed OS, not be destroyed.
+for ob in root.findall('on_reboot'):
+    root.remove(ob)
+
+# The runtime variant lacks the <boot> order the persistent one has; a
+# stateless ROM loader needs it explicit. Insert after firmware/loader.
+os_el = root.find('os')
+if os_el is not None and os_el.find('boot') is None:
+    boot_devs = ['cdrom', 'hd']
+    insert_at = 1  # after <type>
+    for child in os_el:
+        if child.tag in ('firmware', 'loader'):
+            insert_at = list(os_el).index(child) + 1
+    for i, dev in enumerate(boot_devs):
+        os_el.insert(insert_at + i, ET.Element('boot', {'dev': dev}))
 
 # 1. launchSecurity: ensure TDX policy + QGS socket. libvirt may auto-add a
 #    bare <launchSecurity type='tdx'/> from the machine flag; make it explicit.
@@ -529,7 +594,7 @@ for cl in root.findall(NS + 'commandline'):
     if not cl.findall(NS + 'arg'):
         root.remove(cl)
 
-tree.write(output_xml, xml_declaration=True, encoding='unicode')
+ET.ElementTree(root).write(output_xml, xml_declaration=True, encoding='unicode')
 PYEOF
 }
 
@@ -653,10 +718,17 @@ Reinstall qemu with TDX target (package: $(distro_pkgs qemu))."
 
     # disk_has_os: a reused disk likely holds an installed OS (virt-customize can
     # mount it); a freshly created disk is empty (nothing to customize).
+    # An empty qcow2 left over from an aborted install must NOT count —
+    # virt-customize fails on a disk without a filesystem.
     local disk_has_os=0
     if [[ -f "$VM_DISK_PATH" ]]; then
         warn "Disk already exists, reusing: ${VM_DISK_PATH}"
-        disk_has_os=1
+        if command -v virt-filesystems >/dev/null 2>&1 &&
+            virt-filesystems -a "$VM_DISK_PATH" --all --long-only 2>/dev/null | grep -q .; then
+            disk_has_os=1
+        else
+            warn "Disk contains no filesystem (leftover from an aborted install?) — treating as fresh."
+        fi
     fi
 
     ensure_ssh_key
@@ -666,30 +738,51 @@ Reinstall qemu with TDX target (package: $(distro_pkgs qemu))."
 
     if [[ "$creator" == "virt" ]]; then
         # --- virt-install path -------------------------------------------------
+        INSTALLER_KERNEL=""
+        INSTALLER_INITRD=""
+        if ((! VM_NO_TDX)); then
+            local iso_abs="${GUEST_ISO}"
+            [[ -f "${iso_abs}" ]] && iso_abs=$(realpath -- "${iso_abs}" 2>/dev/null || echo "${iso_abs}")
+            extract_installer_media "${iso_abs}"
+        fi
         build_virt_install_cmd
         echo ""
         echo "  virt-install command:"
         printf '    %s\n' "${VIRT_INSTALL_CMD[@]}"
         echo ""
-        if [[ ! -f "$VM_DISK_PATH" ]]; then
-            log "virt-install will create qcow2 disk: ${VM_DISK_PATH} (${VM_DISK})"
-            mkdir -p "$(dirname "$VM_DISK_PATH")"
+        # Generate the domain XML with --print-xml instead of letting
+        # virt-install define + start the domain: the TDX post-patch must
+        # be in place BEFORE the first boot. (The old define→destroy→
+        # patch→start flow cut the install short: libvirt drops the
+        # one-shot <kernel> installer boot from the persistent config at
+        # first start, so the restart fell through to firmware boot —
+        # and a stateless TDX OVMF does not auto-boot the cdrom.)
+        local vi_xml
+        vi_xml=$(mktemp /tmp/tdx-vi-XXXXXX.xml)
+        if ! run "${VIRT_INSTALL_CMD[@]}" --print-xml >"$vi_xml"; then
+            rm -f "$vi_xml"
+            die "virt-install --print-xml failed. See output above."
         fi
-        log "Creating VM with virt-install (defines + starts the domain)"
-        if ! run "${VIRT_INSTALL_CMD[@]}"; then
-            # virt-install exits 1 when --wait times out while the domain is
-            # still running — expected here: the installer needs manual work
-            # and the domain is deliberately left up. Continue if it's alive.
-            local vi_state
-            vi_state=$(virsh domstate "$VM_DISPLAY_NAME" 2>/dev/null || true)
-            if [[ "${vi_state}" == "running" ]]; then
-                warn "virt-install exited non-zero (--wait timeout), but the domain is running. Continuing."
+        if [[ ! -s "$vi_xml" ]] || ! grep -q '<domain' "$vi_xml"; then
+            rm -f "$vi_xml"
+            die "virt-install --print-xml produced no domain XML."
+        fi
+        # --location's extracted kernel/initrd are temp files that
+        # virt-install deletes when it exits; repoint the one-shot boot
+        # at the persistent copies extract_installer_media made earlier.
+        if ((! VM_NO_TDX)) && grep -q '<kernel>' "$vi_xml"; then
+            if [[ -n "${INSTALLER_KERNEL}" && -f "${INSTALLER_KERNEL}" && -f "${INSTALLER_INITRD}" ]]; then
+                sed -i "s|<kernel>.*</kernel>|<kernel>${INSTALLER_KERNEL}</kernel>|; s|<initrd>.*</initrd>|<initrd>${INSTALLER_INITRD}</initrd>|" "$vi_xml"
+                log "Repointed one-shot installer boot at persistent kernel/initrd"
             else
-                die "virt-install failed and the domain is not running (state: ${vi_state:-unknown}). See output above."
+                die "The installer kernel/initrd are missing (${INSTALLER_KERNEL:-not extracted}); cannot build the one-shot boot. Re-run."
             fi
         fi
-        log "Destroying domain to apply the TDX patch, then re-starting (installer reboots)"
-        run virsh destroy "$VM_DISPLAY_NAME" || true
+        if [[ ! -f "$VM_DISK_PATH" ]]; then
+            log "Creating qcow2 disk: ${VM_DISK_PATH} (${VM_DISK})"
+            mkdir -p "$(dirname "$VM_DISK_PATH")"
+            run qemu-img create -f qcow2 "$VM_DISK_PATH" "$VM_DISK"
+        fi
         if ((disk_has_os)); then
             inject_ssh_key_disk
         else
@@ -699,9 +792,8 @@ Reinstall qemu with TDX target (package: $(distro_pkgs qemu))."
             warn "Suspend/hibernate will be disabled automatically by 'setup-guest' after install."
         fi
         local pre_xml post_xml
-        pre_xml=$(mktemp /tmp/tdx-vm-pre-XXXXXX.xml)
+        pre_xml="$vi_xml"
         post_xml=$(mktemp /tmp/tdx-vm-post-XXXXXX.xml)
-        run virsh dumpxml "$VM_DISPLAY_NAME" >"$pre_xml"
         if ((VM_NO_TDX)); then
             cp "$pre_xml" "$post_xml"
         else
@@ -711,10 +803,10 @@ Reinstall qemu with TDX target (package: $(distro_pkgs qemu))."
             log "TDX patch applied (diff):"
             diff "$pre_xml" "$post_xml" | sed 's/^/    /' || true
         fi
-        log "Re-defining VM with patched XML"
+        log "Defining VM with patched XML"
         run virsh define "$post_xml"
         rm -f "$pre_xml" "$post_xml"
-        log "Starting VM"
+        log "Starting VM (first boot: one-shot installer direct kernel boot)"
         run virsh start "$VM_DISPLAY_NAME"
         sleep 2
         run virsh dominfo "$VM_DISPLAY_NAME"
