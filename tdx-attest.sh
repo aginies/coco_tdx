@@ -255,6 +255,7 @@ Options:
     --vm-cpu N             VM vCPUs (default: ${VM_CPU})
     --vm-disk SIZE         VM disk size (default: ${VM_DISK})
     --vnc-listen ADDR      VNC listen address (default: ${VNC_LISTEN})
+    --vnc-port PORT        VNC port (default: ${VNC_PORT})
     --virt-install         Use virt-install for VM creation (default: auto-detect)
     --no-virt-install      Use generated XML instead of virt-install
     --dry-run              setup-vm: print the virt-install command, do not run
@@ -369,6 +370,11 @@ parse_args() {
         --vnc-listen)
             req_val "$1" "${2:-}"
             VNC_LISTEN="$2"
+            shift
+            ;;
+        --vnc-port)
+            req_val "$1" "${2:-}"
+            VNC_PORT="$2"
             shift
             ;;
         --virt-install) VM_CREATOR="virt" ;;

@@ -31,6 +31,10 @@ VM_NO_TDX_XML_PATH="/var/lib/libvirt/nontdx-guest.xml"
 # can see the installer (matches the proven working reference); use
 # 127.0.0.1 to keep VNC host-local only.
 VNC_LISTEN="0.0.0.0"
+# Fixed VNC port for the guest display (libvirt default is autoport, which
+# picks a free port at start and is hard to predict). Override with
+# --vnc-port if the port is already in use on the host.
+VNC_PORT="5900"
 # VM creation engine: auto (virt-install if available, else generated XML),
 # virt (force virt-install), xml (force generated XML)
 VM_CREATOR="auto"

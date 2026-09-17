@@ -193,7 +193,7 @@ ${launchsec_line}
     <console type='pty'>
       <target type='serial' port='0'/>
     </console>
-    <graphics type='vnc' port='-1' autoport='yes' listen='${VNC_LISTEN:-0.0.0.0}'>
+    <graphics type='vnc' port='${VNC_PORT}' listen='${VNC_LISTEN:-0.0.0.0}'>
       <listen type='address' address='${VNC_LISTEN:-0.0.0.0}'/>
     </graphics>
     <video>
@@ -312,7 +312,7 @@ build_virt_install_cmd() {
         --disk "${disk_spec}"
         --cpu host-passthrough
         --network network=default,model=virtio
-        --graphics "vnc,listen=${VNC_LISTEN:-0.0.0.0}"
+        --graphics "vnc,listen=${VNC_LISTEN:-0.0.0.0},port=${VNC_PORT}"
         --video virtio
         --boot fd
         --noautoconsole
@@ -753,7 +753,7 @@ NEXT
 
     virsh console ${VM_DISPLAY_NAME}
 
-   Or use the VNC display (video) — VNC listens on ${VNC_LISTEN}:
+   Or use the VNC display (video) — VNC listens on ${VNC_LISTEN}:${VNC_PORT}:
 
     virsh vncdisplay ${VM_DISPLAY_NAME}   # shows :N
     vncclient <HOST_IP>:<N>
