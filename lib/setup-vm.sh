@@ -283,11 +283,22 @@ choose_vm_creator() {
 # are in effect from a clean boot (the installer just reboots).
 build_virt_install_cmd() {
     local disk_spec="path=${VM_DISK_PATH},format=qcow2"
-    if [[ ! -f "${VM_DISK_PATH}" ]]; then
-        disk_spec="${disk_spec},size=${VM_DISK}"
-    fi
     local vi_major
     vi_major=$(virt_install_major)
+    # virt-install size= expects a bare GiB number, not qemu-img-style units
+    # like "32G" ("could not convert string to float").
+    local vi_size="${VM_DISK}"
+    if [[ "${vi_size}" =~ ^([0-9]+)([A-Za-z]?)$ ]]; then
+        local d_n="${BASH_REMATCH[1]}" d_u="${BASH_REMATCH[2]}"
+        case "${d_u}" in
+        [Tt]) vi_size=$((d_n * 1024)) ;;
+        [Mm]) vi_size=$((d_n / 1024)) ;;
+        [Gg] | "") vi_size="${d_n}" ;;
+        esac
+    fi
+    if [[ ! -f "${VM_DISK_PATH}" ]]; then
+        disk_spec="${disk_spec},size=${vi_size}"
+    fi
     if ((vi_major >= 5)); then
         # 5.x generic fallback (no OS detected) defaults to i440fx/ide/e1000/vga
         # — pin the proven virtio disk explicitly.
