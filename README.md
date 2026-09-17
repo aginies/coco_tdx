@@ -3,7 +3,7 @@
 Version 1.0.0
 
 A guided walkthrough of how to set up and run Intel TDX attestation using
-`tdx-attest.sh`. SLES 16.1 is the reference path; the installation layer
+`tdx-attest.sh`. The installation layer
 is distribution-pluggable (`lib/distros/`), but for now only SLES/openSUSE are
 implemented.
 
