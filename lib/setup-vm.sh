@@ -245,7 +245,7 @@ virt_install_osinfo() {
 
 # Choose the VM creation engine: "virt" (virt-install) or "xml" (generated XML).
 # Falls back to XML when virt-install is unavailable, forced off, or when no
-# installer ISO is given (virt-install path attaches it via --cdrom).
+# installer ISO is given (virt-install path attaches it via --location/--cdrom).
 choose_vm_creator() {
     local want="${VM_CREATOR}"
     if [[ -z "${GUEST_ISO}" && "${want}" != "xml" ]]; then
@@ -342,7 +342,7 @@ build_virt_install_cmd() {
         --network network=default,model=virtio
         --graphics "vnc,listen=${VNC_LISTEN:-0.0.0.0},port=${VNC_PORT}"
         --video virtio
-        --boot fd
+        --boot cdrom,hd
         --noautoconsole
         --wait 1
     )
@@ -415,13 +415,30 @@ Check 'virt-install --help' / 'virt-install --version', or use --no-virt-install
         # qemu-commandline (mirrors the proven working virt-install TDX config).
         cmd+=(--qemu-commandline="-object tdx-guest,id=tdx -machine confidential-guest-support=tdx")
     fi
-    # Absolute ISO path: a relative --cdrom would be stored relative to the
+    # Absolute ISO path: a relative path would be stored relative to the
     # current working directory and break on later boots.
     local iso_path="${GUEST_ISO}"
     if [[ -f "${iso_path}" ]]; then
         iso_path=$(realpath -- "${iso_path}" 2>/dev/null || echo "${iso_path}")
     fi
-    cmd+=(--cdrom "${iso_path}")
+    if ((VM_NO_TDX)); then
+        # Non-TDX: plain cdrom attachment; the firmware boots it first
+        # (--boot cdrom,hd).
+        cmd+=(--cdrom "${iso_path}")
+    else
+        # TDX: direct kernel boot of the installer. A stateless OVMF ROM
+        # inside a TD drops into the firmware setup screen instead of
+        # auto-booting the IDE cdrom (observed on tdxdev1: the identical
+        # XML boots the CD in a non-TDX VM, but the TD sits at the OVMF
+        # setup UI). --location extracts the installer kernel/initrd from
+        # the ISO and boots them directly, bypassing firmware
+        # boot-device selection; the ISO stays attached as a cdrom for
+        # the installer to use as its source. console=ttyS0 puts the
+        # installer on the serial console — the reliable channel for a
+        # TD (the framebuffer is only visible via TDX screen sharing).
+        cmd+=(--location "${iso_path}")
+        cmd+=(--extra-args "console=ttyS0,115200")
+    fi
     VIRT_INSTALL_CMD=("${cmd[@]}")
 }
 
@@ -778,14 +795,20 @@ NEXT
 
 === VM started. MANUAL GUEST INSTALLATION REQUIRED ===
 
-1. Open the console and install SLE 16.1 (or 15 SP7 / 16.0) from the ISO:
+1. The SLE installer boots automatically from the ISO (direct kernel
+   boot — the stateless TDX OVMF inside a TD cannot auto-boot the cdrom
+   on its own). Watch it on the serial console (wired to ttyS0):
 
     virsh console ${VM_DISPLAY_NAME}
 
-   Or use the VNC display (video) — VNC listens on ${VNC_LISTEN}:${VNC_PORT}:
+   The VNC display also works via TDX screen sharing — VNC listens on
+   ${VNC_LISTEN}:${VNC_PORT}:
 
     virsh vncdisplay ${VM_DISPLAY_NAME}   # shows :N
     vncclient <HOST_IP>:<N>
+
+   (If the VM instead shows an OVMF setup screen — generated-XML
+   fallback path — pick the CD boot option there via VNC.)
 
 2. During install: ensure kernel is 6.1+ (default on SLE 16.1).
 

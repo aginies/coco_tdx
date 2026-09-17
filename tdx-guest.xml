@@ -7,7 +7,7 @@ or other application using the libvirt API.
 
 <domain type='kvm'>
   <name>tdx-guest</name>
-  <uuid>a3bb39d4-6f80-48fa-a895-93b56f1eac57</uuid>
+  <uuid>bb9547b1-a561-4ac0-851f-ce15f8b4ecee</uuid>
   <metadata xmlns:ns0="http://libosinfo.org/xmlns/libvirt/domain/1.0">
     <ns0:libosinfo>
       <ns0:os id="http://suse.com/sles/16.1"/>
@@ -51,7 +51,7 @@ or other application using the libvirt API.
   <devices>
     <emulator>/usr/bin/qemu-system-x86_64</emulator>
     <disk type='file' device='disk'>
-      <driver name='qemu' type='qcow2'/>
+      <driver name='qemu' type='qcow2' discard='unmap'/>
       <source file='/var/lib/libvirt/images/tdx-guest.qcow2'/>
       <target dev='vda' bus='virtio'/>
       <address type='pci' domain='0x0000' bus='0x04' slot='0x00' function='0x0'/>
@@ -144,7 +144,7 @@ or other application using the libvirt API.
       <address type='pci' domain='0x0000' bus='0x03' slot='0x00' function='0x0'/>
     </controller>
     <interface type='network'>
-      <mac address='52:54:00:66:b7:db'/>
+      <mac address='52:54:00:59:d0:89'/>
       <source network='default'/>
       <model type='virtio'/>
       <address type='pci' domain='0x0000' bus='0x01' slot='0x00' function='0x0'/>
