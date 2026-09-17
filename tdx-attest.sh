@@ -254,6 +254,7 @@ Options:
     --vm-mem MB            VM memory in MiB (default: ${VM_MEM})
     --vm-cpu N             VM vCPUs (default: ${VM_CPU})
     --vm-disk SIZE         VM disk size (default: ${VM_DISK})
+    --vnc-listen ADDR      VNC listen address (default: ${VNC_LISTEN})
     --no-tdx               Create VM without TDX launch security (test-only)
     --convert-vm NAME      VM to convert to TDX (convert-tdx, auto-detected)
     --ssh-key PATH         SSH key for guest (default: ${SSH_KEY}, auto-created)
@@ -360,6 +361,11 @@ parse_args() {
         --guest-iso)
             req_val "$1" "${2:-}"
             GUEST_ISO="$2"
+            shift
+            ;;
+        --vnc-listen)
+            req_val "$1" "${2:-}"
+            VNC_LISTEN="$2"
             shift
             ;;
         --register-rv)

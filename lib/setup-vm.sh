@@ -193,7 +193,9 @@ ${launchsec_line}
     <console type='pty'>
       <target type='serial' port='0'/>
     </console>
-    <graphics type='vnc' port='-1' autoport='yes' listen='127.0.0.1'/>
+    <graphics type='vnc' port='-1' autoport='yes' listen='${VNC_LISTEN:-0.0.0.0}'>
+      <listen type='address' address='${VNC_LISTEN:-0.0.0.0}'/>
+    </graphics>
     <video>
       <model type='virtio' heads='1' primary='yes'/>
     </video>
@@ -376,6 +378,11 @@ NEXT
 1. Open the console and install SLE 16.1 (or 15 SP7 / 16.0) from the ISO:
 
     virsh console ${VM_DISPLAY_NAME}
+
+   Or use the VNC display (video) — VNC listens on ${VNC_LISTEN}:
+
+    virsh vncdisplay ${VM_DISPLAY_NAME}   # shows :N
+    vncclient <HOST_IP>:<N>
 
 2. During install: ensure kernel is 6.1+ (default on SLE 16.1).
 

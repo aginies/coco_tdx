@@ -27,6 +27,10 @@ VM_DISK_PATH="/var/lib/libvirt/images/tdx-guest.qcow2"
 VM_XML_PATH="/var/lib/libvirt/tdx-guest.xml"
 VM_NO_TDX_DISK_PATH="/var/lib/libvirt/images/nontdx-guest.qcow2"
 VM_NO_TDX_XML_PATH="/var/lib/libvirt/nontdx-guest.xml"
+# VNC listen address for the guest display. 0.0.0.0 so a remote VNC client
+# can see the installer (matches the proven working reference); use
+# 127.0.0.1 to keep VNC host-local only.
+VNC_LISTEN="0.0.0.0"
 CONVERT_VM_NAME=""
 # QGS unix socket (libvirt default). SUSE qgsd listens here.
 QGS_SOCKET="/var/run/tdx-qgs/qgs.socket"
