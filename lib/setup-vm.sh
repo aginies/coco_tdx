@@ -208,6 +208,185 @@ ${rng_line}
 EOF
 }
 
+# =============================================================================
+# virt-install based VM creation (alternative to generate_vm_xml)
+# =============================================================================
+virt_install_available() {
+    command -v virt-install >/dev/null 2>&1
+}
+
+# Choose the VM creation engine: "virt" (virt-install) or "xml" (generated XML).
+# Falls back to XML when virt-install is unavailable, forced off, or when no
+# installer ISO is given (virt-install path attaches it via --cdrom).
+choose_vm_creator() {
+    local want="${VM_CREATOR}"
+    if [[ -z "${GUEST_ISO}" && "${want}" != "xml" ]]; then
+        log "No --guest-iso given; using generated XML (ISO can be attached later)."
+        echo "xml"
+        return 0
+    fi
+    case "${want}" in
+    xml)
+        echo "xml"
+        ;;
+    virt)
+        if virt_install_available; then
+            echo "virt"
+        else
+            warn "virt-install not found (package: python3-virtinst); falling back to generated XML."
+            echo "xml"
+        fi
+        ;;
+    *) # auto
+        if virt_install_available; then
+            echo "virt"
+        else
+            log "virt-install not found; using generated XML."
+            echo "xml"
+        fi
+        ;;
+    esac
+}
+
+# Build the virt-install command in the global VIRT_INSTALL_CMD array.
+# The domain is created paused (--start-paused): cmd_setup_vm destroys it,
+# applies the TDX XML patch (launchSecurity policy/QGS, vsock, memtune,
+# resource partition, pm), re-defines and starts it — so all TDX bits are
+# in effect from the very first boot.
+build_virt_install_cmd() {
+    local disk_spec="path=${VM_DISK_PATH},format=qcow2"
+    if [[ ! -f "${VM_DISK_PATH}" ]]; then
+        disk_spec="${disk_spec},size=${VM_DISK}"
+    fi
+    # shellcheck disable=SC2054  # false positive: multi-line array literal
+    local cmd=(virt-install
+        --name "${VM_DISPLAY_NAME}"
+        --memory "${VM_MEM}"
+        --vcpus "${VM_CPU}"
+        --disk "${disk_spec}"
+        --cpu host-passthrough
+        --network network=default,model=virtio
+        --graphics "vnc,listen=${VNC_LISTEN:-0.0.0.0}"
+        --video virtio
+        --boot fd
+        --noautoconsole
+        --start-paused
+        --wait 1
+    )
+    if ((VM_NO_TDX)); then
+        # No -bios: libvirt firmware autoselection picks pflash OVMF + NVRAM.
+        :
+    else
+        local ovmf_hit ovmf_bin=""
+        if ovmf_hit=$(find_tdx_ovmf); then
+            ovmf_bin="${ovmf_hit##*|}"
+        fi
+        if [[ -z "${ovmf_bin}" ]]; then
+            die "No TDX OVMF firmware found; cannot build virt-install command."
+        fi
+        # -bios -> <loader type='rom' format='raw'> (TDX requires a ROM loader,
+        # never pflash). The tdx-guest object + confidential-guest-support
+        # machine flag go via qemu-commandline (mirrors the proven working
+        # virt-install TDX config).
+        cmd+=(-bios "${ovmf_bin}")
+        cmd+=(--qemu-commandline="-object tdx-guest,id=tdx -machine confidential-guest-support=tdx")
+    fi
+    cmd+=(--cdrom "${GUEST_ISO}")
+    VIRT_INSTALL_CMD=("${cmd[@]}")
+}
+
+# Post-define XML patch for the virt-install path. virt-install has no flags
+# for the SUSE/TDX-specific bits, so they are added here (same style as
+# edit_vm_xml_tdx). Element positions follow the libvirt canonical order
+# (see the working tdx-guest.xml reference).
+# Usage: patch_vm_xml_tdx <input_xml> <output_xml>
+patch_vm_xml_tdx() {
+    local input_xml="$1" output_xml="$2"
+    python3 - "$input_xml" "$output_xml" "$QGS_SOCKET" "$((VM_MEM * 1024 + 369090))" <<'PYEOF'
+import sys, xml.etree.ElementTree as ET
+
+input_xml, output_xml, qgs_socket = sys.argv[1], sys.argv[2], sys.argv[3]
+mem_hard_limit = int(sys.argv[4])
+ET.register_namespace('', '')
+tree = ET.parse(input_xml)
+root = tree.getroot()
+
+# 1. launchSecurity: ensure TDX policy + QGS socket. libvirt may auto-add a
+#    bare <launchSecurity type='tdx'/> from the machine flag; make it explicit.
+ls = root.find('launchSecurity')
+if ls is None:
+    ls = ET.Element('launchSecurity', {'type': 'tdx'})
+    root.append(ls)  # canonical position: after <devices>
+else:
+    ls.set('type', 'tdx')
+for tag in ('policy', 'quoteGenerationService'):
+    for el in ls.findall(tag):
+        ls.remove(el)
+ET.SubElement(ls, 'policy').text = '0x10000000'
+ET.SubElement(ls, 'quoteGenerationService', {'path': qgs_socket})
+
+# 2. vsock (quote generation over vsock)
+devices = root.find('devices')
+if devices is not None and devices.find('vsock') is None:
+    vsock = ET.Element('vsock', {'model': 'virtio'})
+    ET.SubElement(vsock, 'cid', {'auto': 'yes'})
+    devices.append(vsock)
+
+# 3. memtune hard_limit (firmware + overhead headroom), after currentMemory
+for mb in root.findall('memtune'):
+    root.remove(mb)
+mt = ET.Element('memtune')
+ET.SubElement(mt, 'hard_limit', {'unit': 'KiB'}).text = str(mem_hard_limit)
+children = list(root)
+idx = next((i for i, c in enumerate(children) if c.tag == 'currentMemory'), 1)
+root.insert(idx + 1, mt)
+
+# 4. resource partition /machine, after vcpu
+if root.find('resource') is None:
+    res = ET.Element('resource')
+    ET.SubElement(res, 'partition').text = '/machine'
+    children = list(root)
+    idx = next((i for i, c in enumerate(children) if c.tag == 'vcpu'), 2)
+    root.insert(idx + 1, res)
+
+# 5. pm: TDX cannot hibernate — disable suspend-to-mem/disk, before <devices>
+pm = root.find('pm')
+if pm is None:
+    pm = ET.Element('pm')
+    if devices is not None:
+        root.insert(list(root).index(devices), pm)
+    else:
+        root.append(pm)
+for tag in ('suspend-to-mem', 'suspend-to-disk'):
+    el = pm.find(tag)
+    if el is None:
+        el = ET.SubElement(pm, tag)
+    el.set('enabled', 'no')
+
+tree.write(output_xml, xml_declaration=True, encoding='unicode')
+PYEOF
+}
+
+# Inject the SSH key (and disable suspend) into the guest disk via
+# virt-customize. The VM must be off. Uses VM_DISK_PATH / SSH_KEY / GUEST_USER.
+inject_ssh_key_disk() {
+    if command -v virt-customize >/dev/null 2>&1; then
+        log "Injecting SSH key into guest image via virt-customize"
+        local pub_key
+        pub_key=$(cat "${SSH_KEY}.pub")
+        run virt-customize -a "$VM_DISK_PATH" \
+            --run-command "mkdir -p /root/.ssh && chmod 700 /root/.ssh" \
+            --run-command "touch /root/.ssh/authorized_keys; grep -qxF '${pub_key}' /root/.ssh/authorized_keys || echo '${pub_key}' >> /root/.ssh/authorized_keys; chmod 600 /root/.ssh/authorized_keys" \
+            --run-command "mkdir -p /etc/systemd/system && for t in sleep.target suspend.target hibernate.target hybrid-sleep.target; do ln -sf /dev/null /etc/systemd/system/\$t; done" \
+            --run-command "mkdir -p /etc/systemd/logind.conf.d && printf '[Login]\nHandleSuspendKey=ignore\nHandleHibernateKey=ignore\nHandleLidSwitch=ignore\n' > /etc/systemd/logind.conf.d/tdx-no-suspend.conf"
+        log "SSH key injected (user: ${GUEST_USER})"
+        log "Suspend/hibernate disabled in guest image (TDX requirement)"
+    else
+        warn "virt-customize not available ($(distro_pkg_manager) in $(distro_pkgs guest_libs))"
+        warn "Inject the SSH key manually after first boot, or use the console."
+    fi
+}
+
 ensure_ssh_key() {
     if [[ -f "$SSH_KEY" ]]; then
         log "SSH key already exists: $SSH_KEY"
@@ -221,8 +400,6 @@ ensure_ssh_key() {
 }
 
 cmd_setup_vm() {
-    require_root
-    require_cmd virsh qemu-img uuidgen ssh-keygen
     # Determine display name for this mode
     if ((VM_NO_TDX)); then
         VM_DISPLAY_NAME="${VM_NO_TDX_NAME}"
@@ -231,6 +408,32 @@ cmd_setup_vm() {
     else
         VM_DISPLAY_NAME="${VM_NAME}"
     fi
+    # Dry run: print the virt-install command without touching the system
+    # (no root, no virsh, no virt-install required).
+    if ((DRY_RUN)); then
+        if [[ "${VM_CREATOR}" == "xml" ]]; then
+            die "--no-virt-install was given; --dry-run only previews the virt-install path."
+        fi
+        if [[ -z "${GUEST_ISO}" ]]; then
+            die "--dry-run builds the virt-install command, which needs --guest-iso."
+        fi
+        build_virt_install_cmd
+        if ! virt_install_available; then
+            warn "virt-install is not installed on this host — a real run would fall back to the generated XML engine."
+        fi
+        echo ""
+        echo "  virt-install command (DRY RUN — not executed):"
+        printf '    %s\n' "${VIRT_INSTALL_CMD[@]}"
+        echo ""
+        if ((VM_NO_TDX)); then
+            log "Non-TDX mode: no TDX post-patch would be applied."
+        else
+            log "Post-define TDX patch would add: launchSecurity policy+QGS, vsock, memtune hard_limit, resource partition, pm suspend disabled."
+        fi
+        return 0
+    fi
+    require_root
+    require_cmd virsh qemu-img uuidgen ssh-keygen
     log "=== Setting up ${VM_DISPLAY_NAME} (${VM_CPU} vCPU, ${VM_MEM} MiB) ==="
     if ((VM_NO_TDX)); then
         step "Create + define + start a NON-TDX libvirt guest (test mode)" \
@@ -239,7 +442,7 @@ cmd_setup_vm() {
         warn "Use for testing VM installation, networking, SSH key injection, etc."
     else
         step "Create + define + start a TDX-enabled libvirt guest" \
-            "Builds qcow2 disk and domain XML (launchSecurity tdx, UEFI, vsock), then boots for OS install."
+            "Creates the guest (virt-install if available, else generated XML: launchSecurity tdx, UEFI, vsock), then boots for OS install."
     fi
 
     # Confirm a TDX OVMF exists; the explicit <loader> in the XML points at it.
@@ -281,74 +484,113 @@ Reinstall qemu with TDX target (package: $(distro_pkgs qemu))."
         fi
     fi
 
-    log "Creating qcow2 disk: ${VM_DISK_PATH} (${VM_DISK})"
-    mkdir -p "$(dirname "$VM_DISK_PATH")"
     # disk_has_os: a reused disk likely holds an installed OS (virt-customize can
     # mount it); a freshly created disk is empty (nothing to customize).
     local disk_has_os=0
     if [[ -f "$VM_DISK_PATH" ]]; then
         warn "Disk already exists, reusing: ${VM_DISK_PATH}"
         disk_has_os=1
-    else
-        run qemu-img create -f qcow2 "$VM_DISK_PATH" "$VM_DISK"
     fi
-
-    log "Storing VM XML definition: ${VM_XML_PATH}"
-    generate_vm_xml "$VM_XML_PATH"
 
     ensure_ssh_key
 
-    if ((disk_has_os)); then
-        if command -v virt-customize >/dev/null 2>&1; then
-            log "Injecting SSH key into guest image via virt-customize"
-            local pub_key
-            pub_key=$(cat "${SSH_KEY}.pub")
-            run virt-customize -a "$VM_DISK_PATH" \
-                --run-command "mkdir -p /root/.ssh && chmod 700 /root/.ssh" \
-                --run-command "touch /root/.ssh/authorized_keys; grep -qxF '${pub_key}' /root/.ssh/authorized_keys || echo '${pub_key}' >> /root/.ssh/authorized_keys; chmod 600 /root/.ssh/authorized_keys" \
-                --run-command "mkdir -p /etc/systemd/system && for t in sleep.target suspend.target hibernate.target hybrid-sleep.target; do ln -sf /dev/null /etc/systemd/system/\$t; done" \
-                --run-command "mkdir -p /etc/systemd/logind.conf.d && printf '[Login]\nHandleSuspendKey=ignore\nHandleHibernateKey=ignore\nHandleLidSwitch=ignore\n' > /etc/systemd/logind.conf.d/tdx-no-suspend.conf"
-            log "SSH key injected (user: ${GUEST_USER})"
-            log "Suspend/hibernate disabled in guest image (TDX requirement)"
+    local creator
+    creator=$(choose_vm_creator)
+
+    if [[ "$creator" == "virt" ]]; then
+        # --- virt-install path -------------------------------------------------
+        build_virt_install_cmd
+        echo ""
+        echo "  virt-install command:"
+        printf '    %s\n' "${VIRT_INSTALL_CMD[@]}"
+        echo ""
+        if [[ ! -f "$VM_DISK_PATH" ]]; then
+            log "virt-install will create qcow2 disk: ${VM_DISK_PATH} (${VM_DISK})"
+            mkdir -p "$(dirname "$VM_DISK_PATH")"
+        fi
+        log "Creating VM with virt-install (domain starts paused)"
+        run "${VIRT_INSTALL_CMD[@]}"
+        log "Destroying paused domain to apply the TDX patch before first boot"
+        run virsh destroy "$VM_DISPLAY_NAME" || true
+        if ((disk_has_os)); then
+            inject_ssh_key_disk
         else
-            warn "virt-customize not available ($(distro_pkg_manager) in $(distro_pkgs guest_libs))"
-            warn "Inject the SSH key manually after first boot, or use the console."
+            warn "Fresh empty disk — skipping virt-customize (nothing to mount yet)."
+            warn "Install the OS from the ISO first, then inject the SSH key post-install:"
+            warn "  virt-customize -a ${VM_DISK_PATH} --ssh-inject ${GUEST_USER}:file:${SSH_KEY}.pub"
+            warn "Suspend/hibernate will be disabled automatically by 'setup-guest' after install."
         fi
-    else
-        warn "Fresh empty disk — skipping virt-customize (nothing to mount yet)."
-        warn "Install the OS from the ISO first, then inject the SSH key post-install:"
-        warn "  virt-customize -a ${VM_DISK_PATH} --ssh-inject ${GUEST_USER}:file:${SSH_KEY}.pub"
-        warn "Suspend/hibernate will be disabled automatically by 'setup-guest' after install."
-    fi
-
-    log "Defining VM"
-    run virsh define "$VM_XML_PATH"
-
-    # Attach the installer ISO with --config so it persists to the (not-yet-running)
-    # domain definition; a live attach-disk would fail before 'virsh start'.
-    if [[ -n "$GUEST_ISO" ]]; then
-        log "Attaching installer ISO: $GUEST_ISO"
-        if ! run virsh attach-disk "$VM_DISPLAY_NAME" "$GUEST_ISO" hdc \
-            --type cdrom --mode readonly --config; then
-            warn "ISO attach failed; attach manually: virsh attach-disk ${VM_DISPLAY_NAME} ${GUEST_ISO} hdc --type cdrom --config"
+        local pre_xml post_xml
+        pre_xml=$(mktemp /tmp/tdx-vm-pre-XXXXXX.xml)
+        post_xml=$(mktemp /tmp/tdx-vm-post-XXXXXX.xml)
+        run virsh dumpxml "$VM_DISPLAY_NAME" >"$pre_xml"
+        if ((VM_NO_TDX)); then
+            cp "$pre_xml" "$post_xml"
+        else
+            if ! patch_vm_xml_tdx "$pre_xml" "$post_xml"; then
+                die "TDX XML patch failed. Pre-patch XML kept: ${pre_xml}"
+            fi
+            log "TDX patch applied (diff):"
+            diff "$pre_xml" "$post_xml" | sed 's/^/    /' || true
         fi
+        log "Re-defining VM with patched XML"
+        run virsh define "$post_xml"
+        rm -f "$pre_xml" "$post_xml"
+        log "Starting VM"
+        run virsh start "$VM_DISPLAY_NAME"
+        sleep 2
+        run virsh dominfo "$VM_DISPLAY_NAME"
     else
-        warn "No --guest-iso provided. Attach the SLE installer ISO manually before first boot."
-    fi
+        # --- Generated XML path -------------------------------------------------
+        log "Creating qcow2 disk: ${VM_DISK_PATH} (${VM_DISK})"
+        mkdir -p "$(dirname "$VM_DISK_PATH")"
+        if ((disk_has_os)); then
+            : # reusing existing disk
+        else
+            run qemu-img create -f qcow2 "$VM_DISK_PATH" "$VM_DISK"
+        fi
 
-    log "Starting VM"
-    echo ""
-    echo "  VM XML (${VM_XML_PATH}):"
-    sed 's/^/    /' "$VM_XML_PATH"
-    echo ""
-    echo "  Command: virsh start ${VM_DISPLAY_NAME}"
-    echo ""
-    if ((! FORCE)) && [[ -t 0 ]]; then
-        read -r -p "  Press Enter to start the VM (or Ctrl+C to abort): " _
+        log "Storing VM XML definition: ${VM_XML_PATH}"
+        generate_vm_xml "$VM_XML_PATH"
+
+        if ((disk_has_os)); then
+            inject_ssh_key_disk
+        else
+            warn "Fresh empty disk — skipping virt-customize (nothing to mount yet)."
+            warn "Install the OS from the ISO first, then inject the SSH key post-install:"
+            warn "  virt-customize -a ${VM_DISK_PATH} --ssh-inject ${GUEST_USER}:file:${SSH_KEY}.pub"
+            warn "Suspend/hibernate will be disabled automatically by 'setup-guest' after install."
+        fi
+
+        log "Defining VM"
+        run virsh define "$VM_XML_PATH"
+
+        # Attach the installer ISO with --config so it persists to the (not-yet-running)
+        # domain definition; a live attach-disk would fail before 'virsh start'.
+        if [[ -n "$GUEST_ISO" ]]; then
+            log "Attaching installer ISO: $GUEST_ISO"
+            if ! run virsh attach-disk "$VM_DISPLAY_NAME" "$GUEST_ISO" hdc \
+                --type cdrom --mode readonly --config; then
+                warn "ISO attach failed; attach manually: virsh attach-disk ${VM_DISPLAY_NAME} ${GUEST_ISO} hdc --type cdrom --config"
+            fi
+        else
+            warn "No --guest-iso provided. Attach the SLE installer ISO manually before first boot."
+        fi
+
+        log "Starting VM"
+        echo ""
+        echo "  VM XML (${VM_XML_PATH}):"
+        sed 's/^/    /' "$VM_XML_PATH"
+        echo ""
+        echo "  Command: virsh start ${VM_DISPLAY_NAME}"
+        echo ""
+        if ((! FORCE)) && [[ -t 0 ]]; then
+            read -r -p "  Press Enter to start the VM (or Ctrl+C to abort): " _
+        fi
+        run virsh start "$VM_DISPLAY_NAME"
+        sleep 2
+        run virsh dominfo "$VM_DISPLAY_NAME"
     fi
-    run virsh start "$VM_DISPLAY_NAME"
-    sleep 2
-    run virsh dominfo "$VM_DISPLAY_NAME"
 
     if ((VM_NO_TDX)); then
         cat <<NEXT

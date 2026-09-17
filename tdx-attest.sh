@@ -255,6 +255,9 @@ Options:
     --vm-cpu N             VM vCPUs (default: ${VM_CPU})
     --vm-disk SIZE         VM disk size (default: ${VM_DISK})
     --vnc-listen ADDR      VNC listen address (default: ${VNC_LISTEN})
+    --virt-install         Use virt-install for VM creation (default: auto-detect)
+    --no-virt-install      Use generated XML instead of virt-install
+    --dry-run              setup-vm: print the virt-install command, do not run
     --no-tdx               Create VM without TDX launch security (test-only)
     --convert-vm NAME      VM to convert to TDX (convert-tdx, auto-detected)
     --ssh-key PATH         SSH key for guest (default: ${SSH_KEY}, auto-created)
@@ -368,6 +371,9 @@ parse_args() {
             VNC_LISTEN="$2"
             shift
             ;;
+        --virt-install) VM_CREATOR="virt" ;;
+        --no-virt-install) VM_CREATOR="xml" ;;
+        --dry-run) DRY_RUN=1 ;;
         --register-rv)
             REGISTER_RV=1
             ;;

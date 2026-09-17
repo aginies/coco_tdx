@@ -31,6 +31,11 @@ VM_NO_TDX_XML_PATH="/var/lib/libvirt/nontdx-guest.xml"
 # can see the installer (matches the proven working reference); use
 # 127.0.0.1 to keep VNC host-local only.
 VNC_LISTEN="0.0.0.0"
+# VM creation engine: auto (virt-install if available, else generated XML),
+# virt (force virt-install), xml (force generated XML)
+VM_CREATOR="auto"
+# setup-vm: print the virt-install command without executing
+DRY_RUN=0
 CONVERT_VM_NAME=""
 # QGS unix socket (libvirt default). SUSE qgsd listens here.
 QGS_SOCKET="/var/run/tdx-qgs/qgs.socket"

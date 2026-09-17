@@ -562,6 +562,9 @@ sudo ./tdx-attest.sh setup-vm --guest-iso /path/to/SLE-16.1.iso
 | `--vm-cpu N` | `4` | Number of vCPUs |
 | `--vm-disk SIZE` | `32G` | Qcow2 disk size |
 | `--ssh-key PATH` | `~/.ssh/id_ed25519` | SSH keypair to generate/inject |
+| `--virt-install` / `--no-virt-install` | `auto` | VM creation engine: `virt-install` if available, else generated XML |
+| `--vnc-listen ADDR` | `0.0.0.0` | VNC listen address (use `127.0.0.1` for host-local only) |
+| `--dry-run` | *(off)* | Print the `virt-install` command without executing (no root needed) |
 | `--no-tdx` | *(off)* | Create regular non-TDX VM (for later `convert-tdx`) |
 
 **What it does, in order:**
@@ -571,11 +574,27 @@ sudo ./tdx-attest.sh setup-vm --guest-iso /path/to/SLE-16.1.iso
    - *Why:* fail fast — creating a VM that can't be a TD wastes the whole
      install cycle.
 
-2. **Creates the qcow2 disk** (`qemu-img create`, 32G default).
+2. **Creates the qcow2 disk** (32G default) — by `virt-install` itself when
+   the virt-install engine is used, otherwise `qemu-img create`.
    - *Why:* guest storage. If the disk already exists it's reused (treated as
      having an OS).
 
-3. **Generates the domain XML.** The TDX-critical elements and *why* each:
+3. **Creates the domain definition.** Two engines, same result:
+
+   - **virt-install engine (default when `virt-install` is installed):**
+     `virt-install --name … --memory … --vcpus … --disk … --cpu
+     host-passthrough --network network=default,model=virtio --graphics
+     vnc,listen=… --video virtio --boot fd --start-paused -bios <TDX-OVMF>
+     --qemu-commandline="-object tdx-guest,id=tdx -machine
+     confidential-guest-support=tdx" --cdrom <ISO>`. The domain is created
+     *paused*, destroyed, re-defined with a small Python XML patch that adds
+     the SUSE/TDX-specific bits virt-install has no flags for, then started —
+     so everything is in effect from the first boot. This mirrors the proven
+     working virt-install TDX config.
+   - **Generated XML engine** (`--no-virt-install`, or automatic fallback):
+     the script writes the full domain XML itself.
+
+   The TDX-critical elements and *why* each (both engines produce these):
 
    | XML element | Why it's required |
    | --- | --- |
@@ -597,7 +616,8 @@ sudo ./tdx-attest.sh setup-vm --guest-iso /path/to/SLE-16.1.iso
      the key after the OS install instead.
 
 6. **Defines, attaches the ISO (`--config`), and starts the VM** with
-   `virsh`.
+   `virsh` (generated-XML engine; the virt-install engine attaches the ISO
+   via `--cdrom` at creation time).
    - *Why `--config` on attach-disk:* persists the ISO into the domain
      definition; a live attach would fail before the domain exists at runtime.
 
