@@ -1422,6 +1422,22 @@ EOF
     fi
     ssh_guest "sudo rm -f ${KBS_CLIENT_GUEST_LEGACY}" 2>/dev/null || true
 
+    # tdx-quote-gen: quote generator that binds caller-specified report data
+    # (required for host-mode secret-get; the distro's test_tdx_attest always
+    # uses random report data). Built from tools/tdx-quote-gen.c.
+    if ssh_guest "test -x ${TDX_QUOTE_GEN_GUEST}"; then
+        log "tdx-quote-gen present in guest"
+    else
+        log "Building tdx-quote-gen in guest (needs gcc)"
+        ssh_guest "command -v gcc" >/dev/null 2>&1 || install_pkgs_guest gcc
+        ssh_guest "cat > ${GUEST_WORKDIR}/tdx-quote-gen.c" \
+            <"${SCRIPT_DIR}/tools/tdx-quote-gen.c" ||
+            die "Failed to copy tools/tdx-quote-gen.c to guest"
+        ssh_guest "gcc -O2 -o ${TDX_QUOTE_GEN_GUEST} ${GUEST_WORKDIR}/tdx-quote-gen.c -ltdx_attest" ||
+            die "Failed to build tdx-quote-gen in guest"
+        log "tdx-quote-gen installed in guest: ${TDX_QUOTE_GEN_GUEST}"
+    fi
+
     # The guest QCNL uses the same collateral source as the host. In PCCS mode
     # the PCCS root CA is shipped to the guest and trusted there as well.
     setup_collateral_source

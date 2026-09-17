@@ -96,6 +96,11 @@ KBS_CLIENT_GUEST_LEGACY="/usr/local/bin/kbs-client-tdx"
 # Guest access
 GUEST_IP=""
 GUEST_WORKDIR="/root/tdx-attest"
+# Quote generator that binds caller-specified report data (built by
+# setup-guest from tools/tdx-quote-gen.c). Needed for host-mode secret-get,
+# where the quote's report_data must equal sha384 of the runtime data; the
+# distro's test_tdx_attest always uses random report data.
+TDX_QUOTE_GEN_GUEST="/usr/local/bin/tdx-quote-gen"
 SSH_KEY="$HOME/.ssh/id_ed25519"
 GUEST_ISO=""
 GUEST_USER="root"

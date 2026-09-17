@@ -62,13 +62,17 @@ cmd_secret_get() {
             "Generates an EC P-256 TEE key, binds the guest quote to it, evaluates via grpcurl, then GETs /kbs/v0/resource/${SECRET_PATH} and decrypts the JWE response locally."
         require_cmd curl openssl python3
 
-        local keyfile resp_file tee_pubkey_b64
+        local keyfile resp_file tee_pubkey_json
         keyfile=$(mktemp /tmp/tdx-tee-key.XXXXXX)
         resp_file=$(mktemp /tmp/tdx-kbs-resp.XXXXXX)
-        trap 'rm -f "$keyfile" "$resp_file"' RETURN 2>/dev/null || true
+        trap 'rm -f "${keyfile-}" "${resp_file-}"' RETURN 2>/dev/null || true
 
         log "Generating EC P-256 TEE key on host"
-        tee_pubkey_b64=$(
+        # Emit the tee-pubkey as a CANONICAL JSON object (sorted keys,
+        # compact): the AS hashes the canonical JSON of the runtime data to
+        # derive the expected report_data, and KBS parses the tee-pubkey
+        # claim as a TeePubKey object (kbs_types, serde tag "kty").
+        tee_pubkey_json=$(
             python3 - "$keyfile" <<'PYEOF'
 import base64, json, sys
 from cryptography.hazmat.primitives import serialization
@@ -77,18 +81,18 @@ from cryptography.hazmat.primitives.asymmetric import ec
 key = ec.generate_private_key(ec.SECP256R1())
 n = key.public_key().public_numbers()
 b64 = lambda b: base64.urlsafe_b64encode(b).decode().rstrip("=")
-jwk = json.dumps({"kty": "EC", "crv": "P-256", "alg": "ECDH-ES+A256KW",
-                  "x": b64(n.x.to_bytes(32, "big")),
-                  "y": b64(n.y.to_bytes(32, "big"))}, separators=(",", ":"))
+jwk = {"kty": "EC", "crv": "P-256", "alg": "ECDH-ES+A256KW",
+       "x": b64(n.x.to_bytes(32, "big")),
+       "y": b64(n.y.to_bytes(32, "big"))}
 pem = key.private_bytes(serialization.Encoding.PEM,
                         serialization.PrivateFormat.PKCS8,
                         serialization.NoEncryption())
 open(sys.argv[1], "wb").write(pem)
-print(b64(jwk.encode()))
+print(json.dumps(jwk, sort_keys=True, separators=(",", ":")))
 PYEOF
         ) || die "Failed to generate TEE key (python3 'cryptography' module missing?)"
 
-        attest_get_ear_token_with_tee_key "$tee_pubkey_b64"
+        attest_get_ear_token_with_tee_key "$tee_pubkey_json"
 
         log "Fetching resource from KBS: ${url}/kbs/v0/resource/${SECRET_PATH}"
         # Direct curl (not via run) so the EAR token is not printed in the CMD log.
@@ -121,14 +125,15 @@ else:
     # Re-serialize canonically (sorted keys, compact) so the AAD matches what
     # KBS computed over the protected header.
     seg0 = b64e(json.dumps(prot, sort_keys=True, separators=(",", ":")).encode())
-compact = ".".join([seg0, b64e(resp["encrypted_key"]), b64e(resp["iv"]),
-                    b64e(resp["ciphertext"]), b64e(resp["tag"])])
+# The byte fields are already base64url(no pad) strings in the KBS response
+# (serde serialize_base64 in kbs_types).
+compact = ".".join([seg0, resp["encrypted_key"], resp["iv"],
+                    resp["ciphertext"], resp["tag"]])
 
-from jwcrypto import jwe
-import jwcrypto.jwk
-j = jwe.JWE(compact)
+from jwcrypto import jwe, jwk
+j = jwe.JWE()
 key = jwk.JWK.from_pem(open(keyfile, "rb").read())
-j.decrypt(key)
+j.deserialize(compact, key)
 data = j.payload
 if outfile == "-":
     sys.stdout.buffer.write(data)

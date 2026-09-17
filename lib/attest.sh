@@ -34,9 +34,11 @@ attest_evaluate_quote() {
 
     local runtime_data_block=""
     if [[ -n "$runtime_data_json" ]]; then
-        # Escape the inner JSON so it is a valid JSON string value.
+        # Escape the inner JSON so it is a valid JSON string value. The proto
+        # oneof runtime_data is mapped in JSON by the set field's name
+        # (structured_runtime_data), not the oneof name.
         local escaped_json=${runtime_data_json//\"/\\\"}
-        runtime_data_block=$(printf ',\n  "runtime_data": {\n    "structured_runtime_data": "%s"\n  }' "$escaped_json")
+        runtime_data_block=$(printf ',\n    "structured_runtime_data": "%s"' "$escaped_json")
     fi
 
     local req_file
@@ -104,31 +106,34 @@ attest_get_ear_token() {
 }
 
 # Like attest_get_ear_token, but binds the quote to a TEE public key so the
-# resulting EAR token carries attester_runtime_data.tee-pubkey (required by
+# resulting EAR token carries attester_runtime_data tee-pubkey (required by
 # KBS to release resources). The CoCo-AS TDX verifier expects the quote's
 # report_data to equal sha384(canonical JSON runtime data) zero-padded to 64
-# bytes, so we write that digest into the guest's report.dat before running
-# test_tdx_attest. Argument: tee-pubkey, base64url(no pad) of the JWK JSON.
+# bytes, so we write that digest into the guest before generating the quote
+# with tdx-quote-gen. Argument: the tee-pubkey as a canonical JSON object
+# (sorted keys, compact), e.g.
+# {"alg":"ECDH-ES+A256KW","crv":"P-256","kty":"EC","x":"...","y":"..."}.
+# It must be canonical because the AS hashes the canonical JSON of the
+# runtime data to derive the expected report_data.
 attest_get_ear_token_with_tee_key() {
-    local tee_pubkey_b64="$1"
-    [[ -n "$tee_pubkey_b64" ]] || die "attest_get_ear_token_with_tee_key requires the tee-pubkey (b64url JWK)"
+    local tee_pubkey_json="$1"
+    [[ -n "$tee_pubkey_json" ]] || die "attest_get_ear_token_with_tee_key requires the tee-pubkey (canonical JSON object)"
     require_cmd base64 ssh openssl
 
     # Canonical JSON (serde_json_canonicalizer: compact, sorted keys) of the
     # structured runtime data; single key, so the layout is unambiguous.
     local structured
-    structured="{\"tee-pubkey\":\"${tee_pubkey_b64}\"}"
+    structured="{\"tee-pubkey\":${tee_pubkey_json}}"
     local digest
     digest=$(printf '%s' "$structured" | openssl dgst -sha384 -hex | awk '{print $NF}')
     # sha384 = 48 bytes; TDX report_data is 64 bytes, zero-padded.
     local report_data_hex="${digest}00000000000000000000000000000000"
 
     log "Binding quote to TEE key (report_data = sha384(runtime data))"
-    ssh_guest "printf '%s' '${report_data_hex}' | xxd -r -p > ${GUEST_WORKDIR}/report.dat" ||
-        die "Failed to write report.dat in guest"
-
-    log "Generating fresh quote on guest"
-    guest_generate_quote
+    # test_tdx_attest always uses random report data, so use tdx-quote-gen
+    # (installed by setup-guest) which binds the given 64-byte report data.
+    ssh_guest "cd ${GUEST_WORKDIR} && ${TDX_QUOTE_GEN_GUEST} ${report_data_hex} quote.dat" ||
+        die "Failed to generate a quote bound to the TEE key. Is ${TDX_QUOTE_GEN_GUEST} installed in the guest? Re-run: setup-guest --guest-ip <GUEST_IP>"
 
     log "Fetching quote (base64)"
     local quote_b64
