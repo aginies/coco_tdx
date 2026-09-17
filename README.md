@@ -576,23 +576,43 @@ sudo ./tdx-attest.sh setup-vm --guest-iso /path/to/SLE-16.1.iso
 
 2. **Creates the qcow2 disk** (32G default) — by `virt-install` itself when
    the virt-install engine is used, otherwise `qemu-img create`.
-   - *Why:* guest storage. If the disk already exists it's reused (treated as
-     having an OS).
+   - *Why:* guest storage. If the disk already exists it's reused — but only
+     counted as "has an OS" when it actually contains a filesystem
+     (`virt-filesystems`); a leftover empty qcow2 from an aborted install is
+     treated as fresh.
 
 3. **Creates the domain definition.** Two engines, same result:
 
    - **virt-install engine (default when `virt-install` is installed):**
+     the script extracts the installer kernel/initrd from the ISO
+     (`/boot/x86_64/loader/{linux,initrd}`) into
+     `/var/lib/libvirt/boot/<vm>-installer-{kernel,initrd}`, then runs
      `virt-install --name … --memory … --vcpus … --disk … --cpu
      host-passthrough --network network=default,model=virtio --graphics
-     vnc,listen=… --video virtio --boot fd <firmware-flag> <TDX-OVMF>
-     --qemu-commandline="-object tdx-guest,id=tdx -machine
-     confidential-guest-support=tdx" --cdrom <ISO>` (the firmware flag is
-     auto-detected from `virt-install --help`: `--bios`/`-bios`/`--firmware`
-     depending on the version). The domain is created and started, then
-     destroyed, re-defined with a small Python XML patch that adds
-     the SUSE/TDX-specific bits virt-install has no flags for, then started —
-     so everything is in effect from the first boot. This mirrors the proven
-     working virt-install TDX config.
+     vnc,listen=… --video virtio --boot cdrom,hd <firmware> --qemu-commandline="-object
+     tdx-guest,id=tdx -machine confidential-guest-support=tdx" --location <ISO>
+     --extra-args console=ttyS0,115200 --print-xml` — i.e. **XML generation
+     only, nothing is started**. (On virt-install 5.x the firmware is
+     injected with `--xml` XPath as a stateless ROM loader and the machine
+     pinned to `q35`; older versions auto-detect `--bios`/`-bios`/
+     `--firmware` from `virt-install --help`.) The XML's one-shot
+     `<kernel>`/`<initrd>` boot is repointed at the persistent extracted
+     files (virt-install deletes its own `--location` extraction on exit),
+     then the domain is defined and started **once** — so the TDX patch is
+     in place *before* the first boot.
+     - *Why patch before first boot (not define→destroy→patch→start):*
+       libvirt drops the one-shot `<kernel>` installer boot from the
+       persistent config at first start, so a restart after the patch would
+       fall through to firmware boot — and a stateless TDX OVMF inside a TD
+       does **not** auto-boot the IDE cdrom (it sits at the OVMF setup
+       screen; the identical XML boots the CD fine in a non-TDX VM). The
+       installer would be cut off.
+     - *Why `--location` direct kernel boot:* bypasses firmware boot-device
+       selection entirely; the ISO stays attached as a cdrom for the
+       installer to use as its source; `console=ttyS0` puts the installer on
+       the serial console. After the install, the guest reboots, libvirt has
+       already dropped the one-shot kernel, and the firmware boots the
+       installed OS from disk (the same shape as a working installed TD).
    - **Generated XML engine** (`--no-virt-install`, or automatic fallback):
      the script writes the full domain XML itself.
 
@@ -617,9 +637,9 @@ sudo ./tdx-attest.sh setup-vm --guest-iso /path/to/SLE-16.1.iso
    - On a **fresh empty disk** this is skipped (nothing to mount); you inject
      the key after the OS install instead.
 
-6. **Defines, attaches the ISO (`--config`), and starts the VM** with
-   `virsh` (generated-XML engine; the virt-install engine attaches the ISO
-   via `--cdrom` at creation time).
+6. **Defines and starts the VM** with `virsh` (generated-XML engine also
+   attaches the ISO with `attach-disk --config` first; the virt-install
+   engine attaches it via `--location`/cdrom at XML-generation time).
    - *Why `--config` on attach-disk:* persists the ISO into the domain
      definition; a live attach would fail before the domain exists at runtime.
 
@@ -650,8 +670,9 @@ virsh dumpxml tdx-guest | grep -E 'launchSecurity|vsock|loader'
 
 ## Step 6 — Install the guest OS (manual)
 
-This step is manual by design — you must drive the installer through the
-console.
+The installer **boots automatically** on the first start (one-shot direct
+kernel boot from the ISO — see Step 5); you only drive the installer itself
+through the console.
 
 1. **Open the console:**
 
@@ -659,13 +680,21 @@ console.
    virsh console tdx-guest
    ```
 
-   - *Why console (not VNC):* virtio video + serial is the display path that works
-     on a TDX TD; the installer output appears here.
+   - *Why console:* the installer is wired to `console=ttyS0` (serial) — the
+     reliable channel for a TD. The VNC display works too (TDX screen
+     sharing), but the serial console never depends on the guest's display
+     stack.
 
-2. **Install SLES 16.1** from the ISO. Use the default kernel (6.1+ is required
-   for TDX guest support).
+2. **Install SLES 16.1** from the ISO. Use the default kernel (6.1+ is
+   required for TDX guest support).
 
 3. **After install + reboot, get the guest IP:**
+
+   - *Why this just works:* the one-shot installer `<kernel>` is dropped from
+     the domain config after the first boot, so the post-install reboot boots
+     the installed OS from disk via the (stateless) TDX OVMF — no manual XML
+     editing needed. The extracted installer kernel/initrd in
+     `/var/lib/libvirt/boot/` are now unused and can be removed.
 
    ```bash
    virsh net-dhcp-leases default
