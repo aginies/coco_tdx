@@ -5,8 +5,7 @@
 #   - dnf-based pkg_* functions (dnf makecache / dnf install -y / rpm -q)
 #   - pkgs_<role>: qemu-kvm, edk2-ovmf, libvirt-daemon-driver-qemu, ...
 #   - QGS, Trustee and TDX-OVMF are NOT packaged for Fedora upstream — those
-#     roles need source-build strategies (cf. build_kbs_client_tdx in
-#     lib/helpers.sh as the precedent).
+#     roles need source-build strategies.
 # The main script refuses to start on a stub adapter; the hooks below die
 # loudly as defense in depth.
 

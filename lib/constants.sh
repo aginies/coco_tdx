@@ -88,15 +88,10 @@ EAR_TOKEN=""
 # generating a fresh one — test_tdx_attest extends RTMR2/RTMR3 on every run,
 # so a fresh quote would carry a different rtmr_2.
 LAST_QUOTE_B64=""
-# kbs-client location inside the guest.
-# The distro 'trustee' package ships a kbs-client WITHOUT TDX attester (falls
-# back to fake "Sample Attester"). We build a TDX-enabled one from source and
-# install it here; the package version is the fallback (its path is
-# distro-specific — see lib/distros/).
-KBS_CLIENT_GUEST="/usr/local/bin/kbs-client-tdx"
-# Upstream sources for building the TDX-enabled kbs-client
-TRUSTEE_REPO="https://github.com/confidential-containers/trustee.git"
-TRUSTEE_BUILD_DIR="/root/trustee-build"
+# Legacy source-built kbs-client path — no longer used (the distro 'trustee'
+# package kbs-client >= 0.21 ships the TDX attester, version-aligned with the
+# host verifier). Kept only so setup can clean up stale installs.
+KBS_CLIENT_GUEST_LEGACY="/usr/local/bin/kbs-client-tdx"
 
 # Guest access
 GUEST_IP=""
@@ -137,11 +132,15 @@ readonly KBS_ADMIN_KEY="${TRUSTEE_DIR}/kbs-admin.key"
 readonly KBS_ADMIN_PUB="${TRUSTEE_DIR}/kbs-admin.pub"
 readonly KBS_POLICY="${TRUSTEE_DIR}/resource-policy.rego"
 
-# CoCo-AS token signer (persistent EC key pair). Without a signer, grpc-as
-# generates an ephemeral key and does not serve the JWKS endpoint, so KBS
-# cannot verify attestation tokens. Stored under the AS storage dir (owned by
-# coco_as) because /etc/trustee is 750 root:coco_kbs and coco_as cannot
-# traverse it.
+# CoCo-AS token signer (persistent EC key pair + self-signed cert). Without a
+# signer, grpc-as uses an ephemeral key and KBS cannot verify attestation
+# tokens. The KEY stays under the AS storage dir (owned by coco_as) because
+# /etc/trustee is 750 root:coco_kbs; the CERT lives in /etc/trustee so KBS
+# (coco_kbs) can read it, and coco_as is added to the coco_kbs group for
+# directory traversal. This KBS version requires the cert: tokens carry the
+# signer JWK in the header and KBS only accepts it when backed by an x5c
+# chain that chains to attestation_token.trusted_certs_paths.
 readonly AS_SIGNER_DIR="${AS_STORAGE_DIR}/signer"
 readonly AS_SIGNER_KEY="${AS_SIGNER_DIR}/as-signer.key"
 readonly AS_SIGNER_PUB="${AS_SIGNER_DIR}/as-signer.pub"
+readonly AS_SIGNER_CERT="${TRUSTEE_DIR}/as-signer.crt"

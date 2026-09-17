@@ -269,7 +269,9 @@ Options:
     --path PATH            KBS resource path (default: ${SECRET_PATH})
     --file PATH            Secret file: source (secret-set) / dest (secret-get)
     --mode MODE            secret-get: guest (in-guest kbs-client, default)
-                           or host (host-side attest + KBS REST, no build needed)
+                           or host (host-side attest with a host TEE key +
+                           JWE decrypt; no kbs-client needed, works even if
+                           RTMR[3] was extended at runtime)
 
 Advanced examples:
   sudo ${SCRIPT_NAME} all --collateral pccs --pccs-url http://10.0.0.5:8081 --pccs-id 1234

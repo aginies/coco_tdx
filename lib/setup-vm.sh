@@ -1408,16 +1408,19 @@ EOF
     log "Verifying libraries"
     ssh_guest "ldconfig -p | grep tdx" || warn "No tdx libraries found in ldconfig"
 
-    # The package kbs-client lacks the TDX attester. Build a TDX-enabled one on
-    # the host and ship it to the guest so secret-get can produce a real quote.
-    if command -v cargo >/dev/null 2>&1; then
-        build_kbs_client_tdx
+    # The SLE 'trustee' package kbs-client (>= 0.21) ships WITH the TDX
+    # attester — it is version-aligned with the host verifier stack. Source
+    # builds from upstream master can use a newer attestation-agent whose CC
+    # event log the host tdx-verifier cannot replay (RTMR[3] mismatch), so we
+    # never build/ship one; drop any stale source build instead.
+    local guest_pkg_client
+    guest_pkg_client=$(guest_distro_kbs_client_bin)
+    if ssh_guest "test -x ${guest_pkg_client}" && kbs_client_supports_tdx_guest "$guest_pkg_client"; then
+        log "Package kbs-client (${guest_pkg_client}) has the TDX attester"
     else
-        warn "cargo not found on host — cannot build TDX-enabled kbs-client."
-        warn "secret-get will use the package kbs-client (no TDX attester, falls back to sample)."
-        warn "Install Rust (rustup) and re-run setup-guest, or build manually:"
-        warn "  git clone ${TRUSTEE_REPO} && cd trustee && cargo build -p kbs-client --release --features tdx-attester"
+        die "Guest kbs-client (${guest_pkg_client}) is missing or has no TDX attester. Install/upgrade the guest 'trustee' package (>= 0.21) from the ${SGX_REPO_NAME} repo and re-run setup-guest."
     fi
+    ssh_guest "sudo rm -f ${KBS_CLIENT_GUEST_LEGACY}" 2>/dev/null || true
 
     # The guest QCNL uses the same collateral source as the host. In PCCS mode
     # the PCCS root CA is shipped to the guest and trusted there as well.

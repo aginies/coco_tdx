@@ -668,11 +668,13 @@ cmd_verify() {
     fi
     # --- Guest kbs-client has the TDX attester (only when a guest is reachable) ---
     if [[ -n "$GUEST_IP" ]] && ssh_guest "true" 2>/dev/null; then
-        if kbs_client_supports_tdx_guest "$KBS_CLIENT_GUEST"; then
-            record "PASS" "Guest kbs-client has TDX attester: ${KBS_CLIENT_GUEST}"
-        elif ssh_guest "test -x $(guest_distro_kbs_client_bin)" 2>/dev/null; then
-            record "WARN" "Guest kbs-client lacks TDX attester (package sample fallback)" \
-                "Run 'setup-guest' to build + install the TDX-enabled client"
+        local pkg_client
+        pkg_client=$(guest_distro_kbs_client_bin)
+        if ssh_guest "test -x ${pkg_client}" 2>/dev/null && kbs_client_supports_tdx_guest "$pkg_client"; then
+            record "PASS" "Guest package kbs-client has TDX attester: ${pkg_client}"
+        elif ssh_guest "test -x ${pkg_client}" 2>/dev/null; then
+            record "WARN" "Guest kbs-client lacks TDX attester (package too old)" \
+                "Upgrade the guest 'trustee' package (>= 0.21) and re-run setup-guest"
         else
             record "WARN" "No kbs-client found in guest" \
                 "Run 'setup-guest' or install the 'trustee' package"

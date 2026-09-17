@@ -282,52 +282,12 @@ install_pkgs_guest() {
     guest_distro_pkg_install "$@"
 }
 
-# Probe whether a kbs-client binary was built with the tdx-attester feature.
-# A build WITH the feature compiles in the TDX attester, which references
-# /dev/tdx_guest; a build WITHOUT it instead carries the string
-# "`tdx-attester` feature is not enabled!". Static probe: no TD, network,
-# or binutils required.
-kbs_client_supports_tdx() { # host-side: kbs_client_supports_tdx <local-bin>
-    [[ -x "$1" ]] || return 1
-    grep -aq '/dev/tdx_guest' "$1"
-}
-
+# Probe whether a guest kbs-client binary has the TDX attester compiled in.
+# A build WITH the feature references /dev/tdx_guest; a build WITHOUT it
+# instead carries the string "`tdx-attester` feature is not enabled!".
+# Static probe: no TD, network, or binutils required.
 kbs_client_supports_tdx_guest() { # guest-side: kbs_client_supports_tdx_guest <guest-path>
     ssh_guest "test -x '$1' && grep -aq '/dev/tdx_guest' '$1'"
-}
-
-# Build a TDX-enabled kbs-client on the HOST (needs Rust) and ship it to the guest.
-# The SLE 'trustee' package kbs-client is built WITHOUT the TDX attester, so it
-# falls back to a fake "Sample Attester" and real TDX attestation fails. Building
-# from upstream with --features tdx-attester produces a client that reads
-# /dev/tdx_guest + TSM_REPORTS and produces a real TD quote.
-build_kbs_client_tdx() {
-    local host_bin="${TRUSTEE_BUILD_DIR}/target/release/kbs-client"
-    if [[ -x "$host_bin" ]] && kbs_client_supports_tdx "$host_bin"; then
-        log "Reusing previously built kbs-client: $host_bin"
-    else
-        if [[ -x "$host_bin" ]]; then
-            warn "Existing ${host_bin} lacks the tdx-attester feature — rebuilding"
-        fi
-        require_cmd cargo git
-        log "Building TDX-enabled kbs-client from source (needs Rust toolchain)"
-        if [[ ! -d "${TRUSTEE_BUILD_DIR}/.git" ]]; then
-            run git clone --depth 1 "$TRUSTEE_REPO" "$TRUSTEE_BUILD_DIR"
-        fi
-        # Long compile; run with a generous timeout.
-        if ! (cd "$TRUSTEE_BUILD_DIR" && cargo build -p kbs-client --locked --release --features tdx-attester); then
-            die "kbs-client build failed. Check Rust toolchain (rustc >= 1.95) and network access to crates.io + github."
-        fi
-    fi
-    [[ -x "$host_bin" ]] || die "Built kbs-client not found at $host_bin"
-    kbs_client_supports_tdx "$host_bin" ||
-        die "Built kbs-client at $host_bin has no TDX attester (tdx-attester feature not applied?)"
-    log "Shipping kbs-client to guest: ${KBS_CLIENT_GUEST}"
-    ssh_guest "sudo install -m 0755 /dev/stdin ${KBS_CLIENT_GUEST}" <"$host_bin"
-    ssh_guest "test -x ${KBS_CLIENT_GUEST}" || die "Failed to install ${KBS_CLIENT_GUEST} in guest"
-    kbs_client_supports_tdx_guest "$KBS_CLIENT_GUEST" ||
-        die "Guest ${KBS_CLIENT_GUEST} has no TDX attester after install (corrupted transfer?)"
-    log "TDX-enabled kbs-client installed in guest: ${KBS_CLIENT_GUEST}"
 }
 
 # Find a TDX-capable OVMF firmware (distro-specific probe, see lib/distros/).

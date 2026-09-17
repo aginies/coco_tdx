@@ -35,6 +35,14 @@ cmd_secret_set() {
     log "  ${SCRIPT_NAME} secret-get --guest-ip <IP> --path ${SECRET_PATH}"
 }
 
+# If the KBS log shows a CC-eventlog replay failure, the guest's RTMR[3] was
+# extended at runtime (e.g. by test_tdx_attest during attest/register-rv).
+# The in-guest kbs-client cannot pass then until the guest reboots.
+secret_get_eventlog_mismatch() {
+    journalctl -u kbs.service --since "2 min ago" --no-pager 2>/dev/null |
+        grep -q "Eventlog does not pass measurement replay"
+}
+
 cmd_secret_get() {
     detect_guest_ip
     log "=== Fetching secret from KBS (with attestation): ${SECRET_PATH} ==="
@@ -43,32 +51,95 @@ cmd_secret_get() {
     url=$(kbs_url)
 
     if [[ "$SECRET_MODE" == "host" ]]; then
-        # Option D: host-side. Attest via grpcurl to get the EAR token, then
-        # fetch the resource from the KBS REST API with the token as bearer.
-        # No in-guest kbs-client or Rust build needed.
-        step "Host-side: attest to CoCo-AS, then fetch resource from KBS REST" \
-            "Fetches a fresh Quote over ssh, submits via grpcurl, then GETs /kbs/v0/resource/${SECRET_PATH} with the EAR token as bearer."
-        require_cmd curl
-        attest_get_ear_token
+        # Option D: host-side. Generate an EC P-256 TEE key on the host, bind a
+        # fresh guest quote to it (report_data = sha384 of the runtime data),
+        # evaluate via grpcurl to get an EAR token carrying the tee-pubkey
+        # claim, then GET the resource from KBS (JWE-encrypted) and decrypt it
+        # locally. No in-guest kbs-client needed; unlike the in-guest path it
+        # sends no CC eventlog, so it works even after RTMR[3] was extended at
+        # runtime (attest/register-rv) — no guest reboot required.
+        step "Host-side: attest with a host TEE key, then fetch + decrypt resource" \
+            "Generates an EC P-256 TEE key, binds the guest quote to it, evaluates via grpcurl, then GETs /kbs/v0/resource/${SECRET_PATH} and decrypts the JWE response locally."
+        require_cmd curl openssl python3
+
+        local keyfile resp_file tee_pubkey_b64
+        keyfile=$(mktemp /tmp/tdx-tee-key.XXXXXX)
+        resp_file=$(mktemp /tmp/tdx-kbs-resp.XXXXXX)
+        trap 'rm -f "$keyfile" "$resp_file"' RETURN 2>/dev/null || true
+
+        log "Generating EC P-256 TEE key on host"
+        tee_pubkey_b64=$(
+            python3 - "$keyfile" <<'PYEOF'
+import base64, json, sys
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+
+key = ec.generate_private_key(ec.SECP256R1())
+n = key.public_key().public_numbers()
+b64 = lambda b: base64.urlsafe_b64encode(b).decode().rstrip("=")
+jwk = json.dumps({"kty": "EC", "crv": "P-256", "alg": "ECDH-ES+A256KW",
+                  "x": b64(n.x.to_bytes(32, "big")),
+                  "y": b64(n.y.to_bytes(32, "big"))}, separators=(",", ":"))
+pem = key.private_bytes(serialization.Encoding.PEM,
+                        serialization.PrivateFormat.PKCS8,
+                        serialization.NoEncryption())
+open(sys.argv[1], "wb").write(pem)
+print(b64(jwk.encode()))
+PYEOF
+        ) || die "Failed to generate TEE key (python3 'cryptography' module missing?)"
+
+        attest_get_ear_token_with_tee_key "$tee_pubkey_b64"
+
         log "Fetching resource from KBS: ${url}/kbs/v0/resource/${SECRET_PATH}"
-        local out
+        # Direct curl (not via run) so the EAR token is not printed in the CMD log.
+        if ! curl -fsS -H "Authorization: Bearer ${EAR_TOKEN}" \
+            "${url}/kbs/v0/resource/${SECRET_PATH}" >"$resp_file"; then
+            die "Secret retrieval failed. Check attestation (attest cmd) and KBS resource policy."
+        fi
+
+        local decrypt_args
         if [[ -n "$SECRET_FILE" ]]; then
             log "Saving secret to: ${SECRET_FILE}"
-            # Direct curl (not via run) so the EAR token is not printed in the CMD log.
-            if ! curl -fsS -H "Authorization: Bearer ${EAR_TOKEN}" \
-                "${url}/kbs/v0/resource/${SECRET_PATH}" >"$SECRET_FILE"; then
-                die "Secret retrieval failed. Check attestation (attest cmd) and KBS resource policy."
-            fi
-            log "Secret written to ${SECRET_FILE}."
+            decrypt_args=("$keyfile" "$resp_file" "$SECRET_FILE")
         else
-            log "Retrieving secret to stdout (text secrets only; use --file for binary data)"
-            if out=$(curl -fsS -H "Authorization: Bearer ${EAR_TOKEN}" \
-                "${url}/kbs/v0/resource/${SECRET_PATH}"); then
-                echo "$out"
-                log "=== SECRET DELIVERY SUCCESS: attestation passed, secret released ==="
-            else
-                die "Secret retrieval failed. Check attestation (attest cmd) and KBS resource policy."
-            fi
+            log "Retrieving secret to stdout"
+            decrypt_args=("$keyfile" "$resp_file" "-")
+        fi
+        if python3 - "${decrypt_args[@]}" <<'PYEOF'
+import base64, json, sys
+
+keyfile, respfile, outfile = sys.argv[1], sys.argv[2], sys.argv[3]
+
+def b64e(b):
+    return base64.urlsafe_b64encode(b).decode().rstrip("=")
+
+resp = json.load(open(respfile))
+prot = resp.get("protected")
+if isinstance(prot, str):
+    seg0 = prot
+else:
+    # Re-serialize canonically (sorted keys, compact) so the AAD matches what
+    # KBS computed over the protected header.
+    seg0 = b64e(json.dumps(prot, sort_keys=True, separators=(",", ":")).encode())
+compact = ".".join([seg0, b64e(resp["encrypted_key"]), b64e(resp["iv"]),
+                    b64e(resp["ciphertext"]), b64e(resp["tag"])])
+
+from jwcrypto import jwe
+import jwcrypto.jwk
+j = jwe.JWE(compact)
+key = jwk.JWK.from_pem(open(keyfile, "rb").read())
+j.decrypt(key)
+data = j.payload
+if outfile == "-":
+    sys.stdout.buffer.write(data)
+else:
+    open(outfile, "wb").write(data)
+PYEOF
+        then
+            [[ -n "$SECRET_FILE" ]] && log "Secret written to ${SECRET_FILE}."
+            log "=== SECRET DELIVERY SUCCESS: attestation passed, secret released ==="
+        else
+            die "Failed to decrypt the JWE resource response (python3 'jwcrypto' module missing?)"
         fi
         return 0
     fi
@@ -78,38 +149,30 @@ cmd_secret_get() {
         "Runs kbs-client on the guest: it attests to CoCo-AS via KBS, then downloads resource '${SECRET_PATH}' if policy allows."
 
     # kbs-client must run inside the TD guest so its evidence is a real TD quote.
-    # Prefer the TDX-enabled build (setup-guest ships it to ${KBS_CLIENT_GUEST});
-    # the SLE 'trustee' package kbs-client lacks the TDX attester (sample fallback).
-    local kbs_bin=""
-    if ssh_guest "test -x ${KBS_CLIENT_GUEST}"; then
-        if kbs_client_supports_tdx_guest "$KBS_CLIENT_GUEST"; then
-            kbs_bin="${KBS_CLIENT_GUEST}"
-        else
-            warn "${KBS_CLIENT_GUEST} exists but was built WITHOUT the tdx-attester feature."
-            warn "Re-run 'setup-guest' to rebuild + reinstall the TDX-enabled client."
-        fi
+    # Use the distro 'trustee' package kbs-client: it is version-aligned with
+    # the host-side verifier (DCAP/tdx-verifier). Source builds from upstream
+    # master can use a newer attestation stack whose CC event log the host
+    # verifier cannot replay ("Eventlog does not pass measurement replay ... RTMR[3]").
+    local kbs_bin
+    kbs_bin="$(guest_distro_kbs_client_bin)"
+    if ! ssh_guest "test -x ${kbs_bin}"; then
+        log "kbs-client not found in guest — installing 'trustee' package"
+        # shellcheck disable=SC2046  # deliberate word-splitting of the package list
+        install_pkgs_guest $(guest_distro_pkgs trustee)
+        kbs_bin="$(guest_distro_kbs_client_bin)"
     fi
-    if [[ -z "$kbs_bin" ]]; then
-        local guest_pkg_client
-        guest_pkg_client=$(guest_distro_kbs_client_bin)
-        if ssh_guest "test -x ${guest_pkg_client}"; then
-            kbs_bin="${guest_pkg_client}"
-            warn "Using package kbs-client (${guest_pkg_client}) — no TDX attester."
-            warn "Run 'setup-guest' to build + install the TDX-enabled client."
-        else
-            log "kbs-client not found in guest — installing 'trustee' package"
-            # shellcheck disable=SC2046  # deliberate word-splitting of the package list
-            install_pkgs_guest $(guest_distro_pkgs trustee)
-            kbs_bin="${guest_pkg_client}"
-            warn "Installed package kbs-client has no TDX attester (sample fallback)."
-        fi
-    fi
+    kbs_client_supports_tdx_guest "$kbs_bin" ||
+        die "Guest kbs-client (${kbs_bin}) has no TDX attester. Upgrade the guest 'trustee' package (>= 0.21) and re-run setup-guest."
 
     local out
     if [[ -n "$SECRET_FILE" ]]; then
         log "Saving secret to (guest path): ${SECRET_FILE}"
-        ssh_guest "${kbs_bin} --url '${url}' get-resource --path '${SECRET_PATH}' > '${SECRET_FILE}'" ||
+        ssh_guest "${kbs_bin} --url '${url}' get-resource --path '${SECRET_PATH}' > '${SECRET_FILE}'" || {
+            if secret_get_eventlog_mismatch; then
+                die "Secret retrieval failed: CC eventlog replay mismatch — the guest's RTMR[3] was extended at runtime (e.g. by a previous 'attest'/'register-rv' run). Reboot the guest and retry, or use --mode host (no reboot needed)."
+            fi
             die "Secret retrieval failed. Check attestation (attest cmd) and KBS policy."
+        }
         log "Secret written to ${SECRET_FILE} on the guest."
     else
         log "Retrieving secret to stdout (text secrets only; use --file for binary data)"
@@ -117,6 +180,9 @@ cmd_secret_get() {
             echo "$out"
             log "=== SECRET DELIVERY SUCCESS: attestation passed, secret released ==="
         else
+            if secret_get_eventlog_mismatch; then
+                die "Secret retrieval failed: CC eventlog replay mismatch — the guest's RTMR[3] was extended at runtime (e.g. by a previous 'attest'/'register-rv' run). Reboot the guest and retry, or use --mode host (no reboot needed)."
+            fi
             die "Secret retrieval failed. Check attestation (attest cmd) and KBS resource policy."
         fi
     fi

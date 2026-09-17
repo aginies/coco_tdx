@@ -355,7 +355,7 @@ cmd_setup_trustee() {
     "verbose_token": true,
     "signer": {
       "key_path": "${AS_SIGNER_KEY}",
-      "cert_path": "${AS_SIGNER_PUB}"
+      "cert_path": "${AS_SIGNER_CERT}"
     }
   },
   "verifier_config": {
@@ -395,7 +395,8 @@ EOF
     "authorization_mode": "InsecureAllowAll"
   },
   "attestation_token": {
-    "trusted_jwk_sets": ["file://${KBS_JWKS_FILE}"]
+    "trusted_jwk_sets": ["file://${KBS_JWKS_FILE}"],
+    "trusted_certs_paths": ["${AS_SIGNER_CERT}"]
   },
   "attestation_service": {
     "type": "coco_as_grpc",
@@ -612,7 +613,7 @@ ensure_as_signer_key() {
         run chown coco_as:coco_as "$AS_SIGNER_DIR"
     fi
     run chmod 700 "$AS_SIGNER_DIR"
-    if [[ -f "$AS_SIGNER_KEY" && -f "$AS_SIGNER_PUB" && -f "$KBS_JWKS_FILE" ]] &&
+    if [[ -f "$AS_SIGNER_KEY" && -f "$AS_SIGNER_PUB" && -f "$AS_SIGNER_CERT" && -f "$KBS_JWKS_FILE" ]] &&
         [[ -s "$KBS_JWKS_FILE" ]]; then
         log "CoCo-AS signer keypair + JWKS already exist: ${AS_SIGNER_KEY}"
         return 0
@@ -627,6 +628,28 @@ ensure_as_signer_key() {
     run chmod 644 "$AS_SIGNER_PUB" # public: JWKS consumers
     if id coco_as >/dev/null 2>&1; then
         run chown coco_as:coco_as "$AS_SIGNER_KEY" "$AS_SIGNER_PUB"
+    fi
+    # Self-signed cert for the signer key. This KBS version verifies
+    # header-embedded JWKs only against an x5c chain that chains to
+    # attestation_token.trusted_certs_paths; without a cert, every RCAR
+    # handshake fails with "neither trusted jwk set nor trusted pem public
+    # key works". The cert lives in $TRUSTEE_DIR (readable by coco_kbs/KBS);
+    # coco_as needs group traversal of the 750 root:coco_kbs directory.
+    prepare_trustee_dir
+    if [[ -f "$AS_SIGNER_CERT" ]]; then
+        log "CoCo-AS signer cert already exists: ${AS_SIGNER_CERT}"
+    else
+        log "Generating self-signed CoCo-AS signer cert: ${AS_SIGNER_CERT}"
+        run openssl req -new -x509 -key "$AS_SIGNER_KEY" \
+            -subj "/CN=CoCo-AS" -days 3650 -out "$AS_SIGNER_CERT"
+    fi
+    run chmod 644 "$AS_SIGNER_CERT"
+    if id coco_as >/dev/null 2>&1; then
+        run chown coco_as:coco_as "$AS_SIGNER_CERT"
+        if getent group coco_kbs >/dev/null 2>&1; then
+            id -nG coco_as | tr ' ' '\n' | grep -qx coco_kbs ||
+                run usermod -aG coco_kbs coco_as
+        fi
     fi
     # Derive the JWKS (JWK Set) JSON from the public key for KBS token
     # verification. The JWKS holds the EC P-256 x/y coordinates (base64url).

@@ -11,8 +11,14 @@
 # generating a fresh one. This matters because test_tdx_attest extends
 # RTMR2/RTMR3 on every run, so a fresh quote would carry a different rtmr_2
 # and fail to match the value just enrolled.
+# Optional second argument: structured runtime data JSON (e.g.
+# '{"tee-pubkey":"..."}'). When given, it is sent as runtime_data so the EAR
+# token carries the matching attester_runtime_data claims (KBS needs the
+# tee-pubkey claim to release resources); the quote's report_data must then
+# equal sha384(canonical JSON) zero-padded to 64 bytes.
 attest_evaluate_quote() {
     local quote_b64="$1"
+    local runtime_data_json="${2:-}"
     require_cmd base64
     ensure_grpcurl
     ensure_attestation_proto
@@ -26,6 +32,13 @@ attest_evaluate_quote() {
     local evidence_b64
     evidence_b64=$(printf '%s' "$tdx_evidence_json" | base64 -w0 | tr '+/' '-_' | tr -d '=')
 
+    local runtime_data_block=""
+    if [[ -n "$runtime_data_json" ]]; then
+        # Escape the inner JSON so it is a valid JSON string value.
+        local escaped_json=${runtime_data_json//\"/\\\"}
+        runtime_data_block=$(printf ',\n  "runtime_data": {\n    "structured_runtime_data": "%s"\n  }' "$escaped_json")
+    fi
+
     local req_file
     req_file=$(mktemp /tmp/tdx-attest-req.XXXXXX)
     cat >"$req_file" <<EOF
@@ -33,7 +46,7 @@ attest_evaluate_quote() {
   "verification_requests": [
     {
       "tee": "tdx",
-      "evidence": "${evidence_b64}"
+      "evidence": "${evidence_b64}"${runtime_data_block}
     }
   ],
   "policy_ids": ["default"]
@@ -90,6 +103,41 @@ attest_get_ear_token() {
     attest_evaluate_quote "$quote_b64"
 }
 
+# Like attest_get_ear_token, but binds the quote to a TEE public key so the
+# resulting EAR token carries attester_runtime_data.tee-pubkey (required by
+# KBS to release resources). The CoCo-AS TDX verifier expects the quote's
+# report_data to equal sha384(canonical JSON runtime data) zero-padded to 64
+# bytes, so we write that digest into the guest's report.dat before running
+# test_tdx_attest. Argument: tee-pubkey, base64url(no pad) of the JWK JSON.
+attest_get_ear_token_with_tee_key() {
+    local tee_pubkey_b64="$1"
+    [[ -n "$tee_pubkey_b64" ]] || die "attest_get_ear_token_with_tee_key requires the tee-pubkey (b64url JWK)"
+    require_cmd base64 ssh openssl
+
+    # Canonical JSON (serde_json_canonicalizer: compact, sorted keys) of the
+    # structured runtime data; single key, so the layout is unambiguous.
+    local structured
+    structured="{\"tee-pubkey\":\"${tee_pubkey_b64}\"}"
+    local digest
+    digest=$(printf '%s' "$structured" | openssl dgst -sha384 -hex | awk '{print $NF}')
+    # sha384 = 48 bytes; TDX report_data is 64 bytes, zero-padded.
+    local report_data_hex="${digest}00000000000000000000000000000000"
+
+    log "Binding quote to TEE key (report_data = sha384(runtime data))"
+    ssh_guest "printf '%s' '${report_data_hex}' | xxd -r -p > ${GUEST_WORKDIR}/report.dat" ||
+        die "Failed to write report.dat in guest"
+
+    log "Generating fresh quote on guest"
+    guest_generate_quote
+
+    log "Fetching quote (base64)"
+    local quote_b64
+    quote_b64=$(ssh_guest "base64 -w0 ${GUEST_WORKDIR}/quote.dat")
+    [[ -n "$quote_b64" ]] || die "Empty quote from guest"
+
+    LAST_QUOTE_B64="$quote_b64"
+    attest_evaluate_quote "$quote_b64" "$structured"
+}
 register_rvps_reference_values() {
     local mr_td="$1" rtmr_1="$2" rtmr_2="$3" xfam="$4"
     ensure_attestation_proto
@@ -244,6 +292,9 @@ except Exception:
     log "  xfam:   $xfam"
     log "============================================================================="
     log "Now re-run './tdx-attest.sh attest --guest-ip ${GUEST_IP}' to verify ear.status = affirming."
+    warn "Quote fetch ran test_tdx_attest, which EXTENDS RTMR2/RTMR3 at runtime."
+    warn "In-guest 'secret-get' (kbs-client) now fails CC-eventlog replay until the guest reboots."
+    warn "Use 'secret-get --mode host' (no reboot needed) or reboot the guest first."
 }
 
 cmd_attest() {
@@ -370,6 +421,9 @@ except Exception:
                 ear_status=$(echo "$jwt_json" | grep -oP '"ear\.status"\s*:\s*"\K[^"]+' | head -n1 || true)
             fi
         fi
+        warn "Quote fetch ran test_tdx_attest, which EXTENDS RTMR2/RTMR3 at runtime."
+        warn "In-guest 'secret-get' (kbs-client) now fails CC-eventlog replay until the guest reboots."
+        warn "Use 'secret-get --mode host' (no reboot needed) or reboot the guest first."
     fi
 
     echo ""
