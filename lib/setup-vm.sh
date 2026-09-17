@@ -1399,6 +1399,12 @@ EOF
     # shellcheck disable=SC2046  # deliberate word-splitting of the package list
     install_pkgs_guest $(guest_distro_pkgs guest_libs)
 
+    # 'zypper in' only installs missing packages — it does not upgrade the
+    # SUSE-vendored ones already on the disk. Align everything to the SGX
+    # repo versions (vendor change SUSE -> openSUSE build service).
+    log "Aligning guest packages to the ${SGX_REPO_NAME} repo (zypper dup --allow-vendor-change)"
+    ssh_guest "sudo zypper dup --allow-vendor-change -y"
+
     log "Verifying libraries"
     ssh_guest "ldconfig -p | grep tdx" || warn "No tdx libraries found in ldconfig"
 
