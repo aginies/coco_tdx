@@ -366,7 +366,26 @@ def convert_md_to_html(md_path, html_path):
                         flush_list()
                         flush_table()
                         title = line[4:].strip()
-                        html_body.append(f"<h3>{parse_inline(title)}</h3>\n")
+                        h3_id = slugify(title)
+
+                        # Detect step headings and wrap with badge
+                        match = re.search(r"Step (\d+)\s*—\s*(.+)", title)
+                        if match:
+                                # Close previous step div if open
+                                if in_step:
+                                        html_body.append("</div>\n\n")
+                                        in_step = False
+                                s_num = match.group(1)
+                                s_text = match.group(2).strip()
+                                html_body.append(f'<div class="step" id="{h3_id}">\n')
+                                html_body.append(
+                                        f'<h3><span class="step-badge">Step {s_num}</span>{parse_inline(s_text)}</h3>\n'
+                                )
+                                in_step = True
+                        else:
+                                html_body.append(
+                                        f'<h3 id="{h3_id}">{parse_inline(title)}</h3>\n'
+                                )
                         i += 1
                         continue
 

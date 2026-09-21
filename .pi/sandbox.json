@@ -1,0 +1,8 @@
+{
+  "network": {
+    "allowedDomains": [
+      "api.trustedservices.intel.com"
+    ],
+    "deniedDomains": []
+  }
+}

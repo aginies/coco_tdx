@@ -3,9 +3,8 @@
 Version 1.0.0
 
 A guided walkthrough of how to set up and run Intel TDX attestation using
-`tdx-attest.sh`. The installation layer
-is distribution-pluggable (`lib/distros/`), but for now only SLES/openSUSE are
-implemented.
+`tdx-attest.sh`. The installation layer is distribution-pluggable (`lib/distros/`),
+but for now only SLES/openSUSE are implemented.
 
 Each step explains **what** happens, **why** it is needed, and **how to verify** it worked.
 
@@ -16,7 +15,50 @@ The whole process has two sides:
 - **GUEST** — the virtual machine that becomes a *Trust Domain* (TD): its
   memory is encrypted and its state is measured by TDX hardware.
 
-**Attestation flow (remote path, as driven by this guide):**
+---
+
+## Quick Start — 10 commands on a ready host
+
+**Goal in one sentence:** prove to a remote verifier that the guest is a genuine,
+untampered TDX Trust Domain, and only then hand it a secret.
+
+**The happy path (10 commands):**
+
+```bash
+# 1. Host preparation & platform check
+sudo ./tdx-attest.sh check --check-platform
+# If platform is unregistered (HTTP 404 on Xeon 6 / Scalable platforms):
+# sudo ./tdx-attest.sh register-platform --subscription "YOUR_PRIMARY_KEY"
+
+sudo ./tdx-attest.sh setup-host
+sudo ./tdx-attest.sh setup-qgs
+sudo ./tdx-attest.sh setup-trustee
+sudo ./tdx-attest.sh setup-vm --guest-iso /path/to/SLE-16.1.iso
+
+# 2. Manual: install SLES in the VM
+virsh console tdx-guest                    # install from ISO (or any other viewer)
+sudo ./tdx-attest.sh show-vm-info              # get GUEST_IP
+
+# 3. Guest preparation + attestation
+sudo ./tdx-attest.sh attest      --guest-ip <GUEST_IP> --register-rv
+
+# 4. Secret delivery
+sudo ./tdx-attest.sh secret-set --file /tmp/my-secret --path default/test/secret
+sudo ./tdx-attest.sh secret-get --guest-ip <GUEST_IP> --path default/test/secret
+```
+
+> **Prerequisites before starting:**
+>
+> - Intel CPU with TDX (Sapphire Rapids, Emerald Rapids, Xeon 6+)
+> - TDX enabled in BIOS (`kvm_intel.tdx=1` in kernel cmdline)
+> - VT-x enabled in BIOS
+> - SLES 16.1 installer ISO (from SUSE Customer Center)
+> - Internet access to Intel PCS (or a local PCCS cache)
+> - [Full prerequisites →](#prerequisites-before-any-script-command)
+
+---
+
+## Attestation flow (remote path, as driven by this guide)
 
 1. **Guest → Host (vsock:1041):** `/dev/tdx_guest` requests a TDX quote from QGS
 2. **Guest → Host (HTTP:8080):** `kbs-client` submits the quote to KBS
@@ -30,10 +72,56 @@ The whole process has two sides:
 > (`setup-guest`, `attest`, `secret-get`), but the attestation data path
 > itself is vsock (quote) + HTTP (KBS).
 > Diagrams of the full process (guest vs host, local vs remote paths) are in
-> the [Attestation Process — Visual Overview](#attestation-process--visual-overview) section near the end.
+> the [Attestation Process — Visual Overview](#attestation-process--visual-overview) section below.
 
-**The goal in one sentence:** prove to a remote verifier that the guest is a
-genuine, untampered TDX Trust Domain, and only then hand it a secret.
+---
+
+## Attestation Process — Visual Overview
+
+A full visual of the process — guest vs host placement, local (DCAP QVL)
+vs remote (Trustee) verification paths, and the RCAR sequence. The editable
+source (mermaid) is in [intel-tdx-attestation-graph.md](intel-tdx-attestation-graph.md);
+the diagrams below are rendered as SVG so they survive HTML conversion.
+
+**Main flow — local vs remote verification (blue = guest, orange = host):**
+
+![Intel TDX attestation main flow](intel-tdx-attestation-flow.svg)
+
+**Remote path — RCAR sequence:**
+
+![Intel TDX attestation RCAR sequence](intel-tdx-attestation-sequence.svg)
+
+---
+
+## Choose your path
+
+| I want to… | Use this |
+| --- | --- |
+| Get everything running in one shot | `./tdx-attest.sh all --guest-iso …` → [jump to Step 6](#step-6--install-the-guest-os-manual) |
+| Understand each layer individually | [Steps 1–5](#one-shot-setup-tdx-attestsh-all) below |
+| Debug a broken setup | [Troubleshooting](#troubleshooting-map) |
+| Only check if my platform works | `./pccs-check.sh check --auto --tdx` |
+| Run in an air-gapped / offline environment | `--collateral pccs --pccs-url …` |
+
+---
+
+## What each step actually changes
+
+| Step | Changes on disk? | Changes network? | Requires reboot? | Can be skipped? |
+| ------ | --- | --- | --- | --- |
+| [1. Check host capabilities](#step-1--check-host-capabilities) | No | No | No | No (safety gate) |
+| [2. setup-host (DCAP stack)](#step-2--set-up-the-host-dcap-stack) | Yes (packages, QCNL config) | No | No | Only if already done |
+| [3. setup-qgs (quote signing)](#step-3--set-up-qgs-quote-signing) | Yes (unit files, socket) | No | No | Only if already done |
+| [4. setup-trustee (attestation + secrets)](#step-4--set-up-trustee-attestation--secrets) | Yes (3 configs, keys, policy) | Yes (ports 3000/8080) | No | Only if already done |
+| [5. setup-vm (create TD)](#step-5--create-the-trust-domain-vm) | Yes (disk, XML) | No | No | Only if already done |
+| [6. Install guest OS](#step-6--install-the-guest-os-manual) | Yes (guest disk) | No | Yes (guest) | **No** |
+| [7. setup-guest (guest config)](#step-7--set-up-the-guest-inside-the-td) | Yes (guest config) | No | No | Only if already done |
+| [8. attest (remote attestation)](#step-8--perform-remote-attestation) | No (read-only) | Yes (vsock→QGS→PCS) | No | Only if already done |
+| [9. secret-get (secret delivery)](#step-9--secret-delivery) | No | Yes (guest→KBS) | No | Only if already done |
+| [10. verify (consistency check)](#step-10--verify-everything-is-consistent-any-time) | No | No | No | **Recommended anytime** |
+| [11. clean (cleanup)](#step-11--cleanup-when-done) | Yes (destroys VM) | No | No | Only when done |
+
+---
 
 ## Source Code
 
@@ -74,42 +162,6 @@ curl -LO "https://github.com/aginies/coco_tdx/archive/refs/tags/v1.0.0.tar.gz"
 tar xzf v1.0.0.tar.gz
 cd coco_tdx-1.0.0
 ```
-
-### Quick start
-
-After obtaining the scripts, the recommended entry point is:
-
-```bash
-# Run the full capability check (no changes)
-./tdx-attest.sh check
-
-# One-shot setup of the entire stack
-sudo ./tdx-attest.sh all --guest-iso /path/to/SLE-16.1.iso
-```
-
-## Contents
-
-- [Source Code](#source-code)
-- [Prerequisites](#prerequisites-before-any-script-command)
-- [Platform Validation & Registration with pccs-check.sh](#platform-validation--registration-with-pccs-checksh)
-- [One-shot setup: tdx-attest.sh all](#one-shot-setup-tdx-attestsh-all)
-- [Step 1 — Check host capabilities](#step-1--check-host-capabilities)
-- [Step 2 — Set up the host (DCAP stack)](#step-2--set-up-the-host-dcap-stack)
-- [Step 3 — Set up QGS (quote signing)](#step-3--set-up-qgs-quote-signing)
-- [Step 4 — Set up Trustee (attestation + secrets)](#step-4--set-up-trustee-attestation--secrets)
-- [Step 5 — Create the Trust Domain (VM)](#step-5--create-the-trust-domain-vm)
-- [Step 6 — Install the guest OS (manual)](#step-6--install-the-guest-os-manual)
-- [Step 7 — Set up the guest (inside the TD)](#step-7--set-up-the-guest-inside-the-td)
-- [Step 8 — Perform remote attestation](#step-8--perform-remote-attestation)
-- [Step 9 — Secret delivery](#step-9--secret-delivery)
-- [Step 10 — Verify everything is consistent (any time)](#step-10--verify-everything-is-consistent-any-time)
-- [Step 11 — Cleanup (when done)](#step-11--cleanup-when-done)
-- [Quick reference: the happy path](#quick-reference-the-happy-path)
-- [Troubleshooting map](#troubleshooting-map)
-- [Attestation Process — Visual Overview](#attestation-process--visual-overview)
-- [Acronym Glossary](#acronym-glossary)
-- [Appendix — JWT & EAR tokens](#appendix--jwt--ear-tokens)
-- [License](#license)
 
 ---
 
@@ -276,7 +328,7 @@ Should return HTTP 200 and show enclave identity `TD_QE` with `isvprodid: 2`.
 
 ---
 
-## One-shot setup: tdx-attest.sh all
+## One-shot setup: `tdx-attest.sh all`
 
 Instead of running Steps 1–5 one by one, a single command chains them:
 
@@ -297,12 +349,18 @@ host-side configuration.
 
 `all` stops at VM start: the manual guest OS install (Step 6) and everything
 after it (Steps 7–9) still has to be done by hand. **If you used `all`, skip
-straight to Step 6** — Steps 1–5 above are only for running things
+straight to Step 6** — Steps 1–5 below are only for running things
 individually.
 
 ---
 
-## Step 1 — Check host capabilities
+## Detailed Steps 1–5 (host setup, individual)
+
+> **Skip this section if you used `tdx-attest.sh all`.**
+> These are the individual commands for when you want to run each layer
+> one-by-one (debugging, custom setups, incremental re-runs).
+
+### Step 1 — Check host capabilities
 
 **Command:**
 
@@ -323,7 +381,7 @@ required.
 | QEMU version | `qemu-system-x86_64 --version` | TDX support requires QEMU ≥ 8.0. |
 | QEMU TDX object | `qemu-system-x86_64 -object help` | TDX is a QEMU *object* (`tdx-guest`), not a machine type — so we probe the object list, not `-machine help`. |
 | TDX OVMF firmware | scan `/usr/share/qemu/firmware/*.json` | A TDX-specific UEFI firmware must exist to boot the TD. |
-| TDX module | `dmesg \| grep 'TDX-Module initialized'` | Real proof the TDX module is up and KVM TDX is enabled. Requires `kvm_intel.tdx=1` in the kernel command line (see Prerequisites). |
+| TDX module | `dmesg \| grep 'TDX-Module initialized'` | |
 | DCAP packages | `rpm -qa` | Quote-verification libraries. |
 | QGS service | `systemctl`, socket checks | Quote signing service (Step 3). |
 | Trustee services | `systemctl` ×3 | Attestation stack (grpc-as, kbs, rvps; Step 4). |
@@ -340,7 +398,7 @@ package to install, service to start).
 
 ---
 
-## Step 2 — Set up the host (DCAP stack)
+### Step 2 — Set up the host (DCAP stack)
 
 **Command:**
 
@@ -394,7 +452,7 @@ virsh -c qemu:///system version           # libvirt answers
 
 ---
 
-## Step 3 — Set up QGS (quote signing)
+### Step 3 — Set up QGS (quote signing)
 
 **Command:**
 
@@ -457,7 +515,7 @@ id qemu | grep qgsd                       # qemu in qgsd group
 
 ---
 
-## Step 4 — Set up Trustee (attestation + secrets)
+### Step 4 — Set up Trustee (attestation + secrets)
 
 **Command:**
 
@@ -553,7 +611,7 @@ ss -tln | grep -E '3000|8080'                  # ports listening
 
 ---
 
-## Step 5 — Create the Trust Domain (VM)
+### Step 5 — Create the Trust Domain (VM)
 
 **Command:**
 
@@ -832,8 +890,12 @@ enrolled.
 **Command (on the host):**
 
 ```bash
-sudo ./tdx-attest.sh attest --guest-ip <GUEST_IP>
+sudo ./tdx-attest.sh attest --guest-ip <GUEST_IP> --register-rv
 ```
+
+> **Default:** `--register-rv` is recommended — it enrolls the guest's
+> measurements in RVPS *and* re-evaluates the same quote, giving a clean
+> `ear.status = affirming` in one step. See [below](#enrolling-reference-values-into-rvps) for details.
 
 **What it does, in order:**
 
@@ -844,7 +906,15 @@ sudo ./tdx-attest.sh attest --guest-ip <GUEST_IP>
 2. **Fetches the quote** (base64-encoded over SSH).
    - *Why base64:* it's binary data that must travel inside a JSON request.
 
-3. **Submits it to CoCo-AS** with:
+3. **Enrolls reference values in RVPS** (with `--register-rv`):
+   - *Why:* RVPS stores the expected measurements (MRTD, RTMRs, XFAM) that
+     CoCo-AS compares against during appraisal. Without enrollment, the
+     appraisal returns `contraindicated` because no reference values exist.
+     `--register-rv` writes the current guest's measurements into RVPS and
+     re-evaluates the *same* quote (not a fresh one), so the RTMR values
+     match by construction → `ear.status = affirming`.
+
+4. **Submits it to CoCo-AS** with:
 
    ```bash
    grpcurl -plaintext -import-path protos -proto attestation.proto -d @ 127.0.0.1:3000 \
@@ -860,15 +930,15 @@ sudo ./tdx-attest.sh attest --guest-ip <GUEST_IP>
      — a JWT containing all measured claims plus an `allow: true/false`
      decision.
 
-4. **Decodes the EAR JWT and checks `allow: true`.**
+5. **Decodes the EAR JWT and checks `allow: true`.**
    - *Why look in the JWT:* the policy decision lives *inside the token*, not
      in the gRPC response body. `allow: true` = attestation succeeded.
 
 **The EAR token in one sentence:** CoCo-AS wraps the verified quote in an
 **EAR token** — a JWT (built on EAT, RFC 9711) carrying the measured claims
 plus the `allow` decision; KBS verifies its signature and reads `allow`
-without re-doing the attestation. *(Full background: “Appendix — JWT & EAR
-tokens” at the end of this guide.)*
+without re-doing the attestation. *(Full background: "Appendix — JWT & EAR
+tokens" at the end of this guide.)*
 
 The `attest` command decodes the EAR token (a JWT built on EAT, RFC 9711): extracts payload, formats claims, displays a structured verification report, and checks `ear.status` as well as the Intel PCS `tcb_status`.
 
@@ -1106,33 +1176,225 @@ sudo ./tdx-attest.sh clean
 
 ---
 
-## Quick reference: the happy path
+## Step 12 — Air-gapped / Offline Setup (optional)
+
+If your host **cannot reach Intel PCS** (no internet, air-gapped network,
+compliance requirements), you must run a local **PCCS** (Provisioning
+Certification Caching Service) that caches PCS collateral locally. The scripts
+support this via the `--collateral pccs --pccs-url …` flags.
+
+### What is PCCS?
+
+PCCS is Intel's local caching service (Node.js + SQLite) that stores:
+
+- **PCK certificates** — per-platform signing certificates
+- **TCB info** — Trusted Computing Base status (microcode, BIOS, CVE advisories)
+- **QE identity** — Quoting Enclave identity for quote verification
+- **CRLs** — Certificate Revocation Lists
+
+Without PCCS, the DCAP stack fetches collateral from Intel PCS at runtime
+(`https://api.trustedservices.intel.com/tdx/certification/v4/…`). With PCCS,
+it reads from the local cache instead.
+
+### Prerequisites for air-gapped operation
+
+| Requirement | Notes |
+| --- | --- |
+| PCCS service running and reachable | Must be set up *before* going offline (see below) |
+| Intel Trusted Services subscription key | Needed for **platform registration** (Xeon 6 / Scalable platforms) — this step **requires internet** |
+| SLES 16.1 ISO | Same as online setup |
+| `kvm_intel.tdx=1` in kernel cmdline | Same as online setup |
+| TDX enabled in BIOS | Same as online setup |
+
+> **⚠️ Registration still needs internet:**
+> On Xeon 6 / Granite Rapids / Emerald Rapids, Intel does **not** publish PCK
+> certificates until you register the platform. You must do this step **while
+> the host still has internet access**, then go offline.
+> Run `sudo ./tdx-attest.sh register-platform --subscription <KEY>` before
+> disconnecting.
+
+### Step-by-step: initial sync (while you still have internet)
+
+#### 1. Install PCCS
 
 ```bash
-# 1. Host preparation & platform check
-sudo ./tdx-attest.sh check --check-platform
-# If platform is unregistered (HTTP 404 on Xeon 6 / Scalable platforms):
-# sudo ./tdx-attest.sh register-platform --subscription "YOUR_PRIMARY_KEY"
-
-sudo ./tdx-attest.sh setup-host
-sudo ./tdx-attest.sh setup-qgs
-sudo ./tdx-attest.sh setup-trustee
-sudo ./tdx-attest.sh setup-vm --guest-iso /path/to/SLE-16.1.iso
-#    (or: sudo ./tdx-attest.sh all --guest-iso /path/to/iso)
-
-# 2. Manual: install SLE in the VM
-virsh console tdx-guest                    # install from ISO
-virsh net-dhcp-leases default              # get GUEST_IP (or run: sudo ./tdx-attest.sh show-vm-info)
-
-# 3. Guest preparation + attestation
-# (Note: --guest-ip is optional if only one VM is running)
-sudo ./tdx-attest.sh setup-guest --guest-ip <GUEST_IP>
-sudo ./tdx-attest.sh attest      --guest-ip <GUEST_IP> --register-rv
-
-# 4. Secret delivery
-sudo ./tdx-attest.sh secret-set --file /tmp/my-secret --path default/test/secret
-sudo ./tdx-attest.sh secret-get --guest-ip <GUEST_IP> --path default/test/secret
+# From the SLES SGX repo (or download the PCCS package manually)
+sudo zypper install suse-libsgx-dcap-default-qpl
+# PCCS is typically provided as a separate package or tarball
+# Install Node.js if not present:
+sudo zypper install nodejs
 ```
+
+#### 2. Start PCCS and sync with Intel PCS
+
+```bash
+# Start PCCS (default port: 8081)
+sudo systemctl start pccs
+# or if using a tarball installation:
+node /opt/intel/pccs/server/app.js --config /opt/intel/pccs/config.json
+
+# Verify it's running:
+curl -sI http://localhost:8081/
+# Should return HTTP 200
+```
+
+PCCS will automatically sync with Intel PCS in the background. Wait for the
+sync to complete (check PCCS logs for "sync completed" messages).
+
+#### 3. Verify PCCS has collateral
+
+```bash
+# Check TCB status via PCCS (not Intel PCS):
+sudo ./pccs-check.sh tcb --tdx --pccs-url http://localhost:8081
+
+# Check PCK certificate availability:
+sudo ./pccs-check.sh pckcert --auto --tdx --pccs-url http://localhost:8081
+```
+
+#### 4. Register your platform (if needed)
+
+```bash
+# MUST be done while still connected to Intel PCS:
+sudo ./tdx-attest.sh register-platform --subscription "YOUR_PRIMARY_KEY"
+```
+
+### Step-by-step: going offline
+
+#### 5. Disconnect the host from the internet
+
+#### 6. Run the full setup with `--collateral pccs`
+
+```bash
+# All host setup commands now use --collateral pccs:
+sudo ./tdx-attest.sh check --check-platform --collateral pccs --pccs-url http://<PCCS_HOST>:8081
+sudo ./tdx-attest.sh setup-host --collateral pccs --pccs-url http://<PCCS_HOST>:8081
+sudo ./tdx-attest.sh setup-qgs --collateral pccs --pccs-url http://<PCCS_HOST>:8081
+sudo ./tdx-attest.sh setup-trustee --collateral pccs --pccs-url http://<PCCS_HOST>:8081
+sudo ./tdx-attest.sh setup-vm --guest-iso /path/to/SLE-16.1.iso --collateral pccs --pccs-url http://<PCCS_HOST>:8081
+```
+
+> **Note:** The `--collateral pccs --pccs-url` flags are propagated to
+> `setup-host` (which writes QCNL config pointing at PCCS) and to
+> `setup-trustee` (which configures CoCo-AS to read from PCCS).
+> `setup-qgs` and `setup-vm` don't directly use the flag but benefit
+> from the QCNL config written by `setup-host`.
+
+#### 7. Complete the remaining steps (6–11) as usual
+
+Steps 6–11 (guest OS install, guest setup, attestation, secret delivery,
+verify, cleanup) are **identical** to the online flow. The only difference
+is that quote verification reads collateral from PCCS instead of Intel PCS.
+
+### Self-signed / private CA for PCCS
+
+If your PCCS uses a self-signed or private root CA:
+
+```bash
+# Point setup-host at the CA certificate:
+sudo ./tdx-attest.sh setup-host \
+  --collateral pccs \
+  --pccs-url https://<PCCS_HOST>:8081 \
+  --pccs-ca /path/to/pccs-root-ca.pem
+
+# Or bypass TLS verification (lab use only):
+sudo ./tdx-attest.sh setup-host \
+  --collateral pccs \
+  --pccs-url https://<PCCS_HOST>:8081 \
+  --insecure
+```
+
+### Troubleshooting air-gapped setups
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `qgs` logs: "No certificate data for this platform" | PCCS hasn't synced yet, or platform not registered | Wait for PCCS sync; run `register-platform` while online |
+| `curl http://<PCCS_HOST>:8081/` fails | PCCS not running or wrong port | `systemctl status pccs`; default port is 8081 |
+| TCB status shows "OutOfDate" | PCCS cache is stale | Re-sync PCCS with Intel PCS (requires temporary internet) |
+| `check-platform` returns 404 | Platform not registered with Intel | Must register while online (see above) |
+| QGS fails with `0xe011` | PCCS unreachable or misconfigured QCNL | Verify `cat /run/dcap/qcnl.conf` points at PCCS |
+
+### PCCS maintenance (after initial sync)
+
+PCCS caches are **not automatically updated** in air-gapped mode. To refresh:
+
+```bash
+# Temporarily restore internet, sync, then disconnect again:
+sudo pccs-sync --url https://api.trustedservices.intel.com/tdx/certification/v4/tcb
+
+# Or manually download updated collateral and import into PCCS:
+# (see Intel PCCS documentation for the import procedure)
+```
+
+> **Recommendation:** Set up a periodic sync schedule (e.g., weekly cron job
+> on a host that has intermittent internet access) to keep PCCS collateral
+> up-to-date with the latest TCB levels and CVE advisories.
+
+| Symptom | Likely cause | What to do |
+| --- | --- | --- |
+| QEMU/libvirt fail at launch: "TDX not supported" | `kvm_intel.tdx` missing from kernel command line | Add `kvm_intel.tdx=1` to GRUB cmdline, regenerate GRUB config, reboot. Check: `cat /sys/module/kvm_intel/parameters/tdx` should be `Y` |
+| QGS logs HTTP 404 / "No certificate data for this platform" / error `0xe011` or `0xe01b` | Platform not registered with Intel Registration Service (Xeon 6 / Scalable platforms) | Run `sudo ./tdx-attest.sh register-platform --subscription <KEY>` or `sudo pccs-check.sh register --subscription <KEY>` |
+| `modprobe tdx_guest` → "No such device" inside guest | VM not launched as a TD | `sudo ./tdx-attest.sh verify` → VM TDX rows; check ROM loader + launchSecurity |
+| Installer never appears; guest boots but isn't a TD | pflash loader instead of ROM | `virsh dumpxml` — loader must be `type='rom'` |
+| `test_tdx_attest`: "Failed to get the report" | QGS misconfigured on host | `setup-guest` prints a 6-item pre-flight table — fix the red row |
+| Attestation: `ear.status: contraindicated` | RVPS values missing or mismatched | Run `sudo ./tdx-attest.sh attest --guest-ip <GUEST_IP> --register-rv` or check `journalctl -u grpc-as.service -n 50` |
+| Attestation: `ear.status: warning` | `rtmr_2` mismatch: the quote tool (`test_tdx_attest`) extends RTMR 2/3 on every run, so a fresh quote never matches the enrolled value | Hardware verification still passes (TCB UpToDate). To see a clean `affirming`, run `tdx-attest.sh attest --guest-ip <GUEST_IP> --register-rv` (same-quote re-evaluation). Plain `attest` stays `warning` until a non-extending quote tool is used. |
+| In-guest `secret-get`: `Eventlog does not pass measurement replay ... Register [index = 3]` | The guest's RTMR 3 was extended at runtime (by a previous `attest`/`register-rv` run), so the boot-time CC event log no longer replays | Reboot the guest (resets the RTMRs), or use `secret-get --mode host` (sends no event log — no reboot needed) |
+| KBS rejects tokens: `neither trusted jwk set nor trusted pem public key works` | Token header embeds a `jwk` but the `x5c` chain is empty or doesn't chain to `trusted_certs_paths` | `sudo ./tdx-attest.sh setup-trustee` (regenerates `/etc/trustee/as-signer.crt`, `grpc-as.json` `cert_path`, `kbs.json` `trusted_certs_paths`); or `verify` → JWKS rows |
+| `trustee.service` reports `inactive` / condition failed | The monolithic `trustee.service` is intentionally disabled in favor of individual modular units | Expected behavior. Verify the active modular services: `systemctl is-active grpc-as kbs rvps qgsd` |
+| Guest kbs-client missing or lacks TDX attester | `trustee` package too old (< 0.21) | Install/upgrade the `trustee` package from the SGX repo, then re-run `sudo ./tdx-attest.sh setup-guest --guest-ip <GUEST_IP>` |
+| Guest can't reach KBS (secret-get times out) | Host firewall blocks 8080, wrong guest IP, or libvirt NAT issue | From the guest: `curl -sI http://<HOST_IP>:8080` — check the host firewall (`sudo firewall-cmd --list-ports`) and re-fetch the IP with `virsh net-dhcp-leases default` |
+| Local PCCS reports TLS certificate errors | Self-signed or private root CA not trusted | Pass `--pccs-ca /path/to/pccs-ca.pem` to `setup-host` or supply `--insecure` |
+| `grpcurl: command not found` | Auto-installed grpcurl not in PATH | The script installs it to `/usr/local/bin` (root) or `~/.local/bin` — check `echo $PATH`, or re-run `attest` as root so it lands in `/usr/local/bin` |
+| Quotes work, then break after host reboot | `/run/dcap/qcnl.conf` wiped (tmpfs) | `systemctl status qgsd-setup.service` — it should restore it |
+
+Debug any step with full command trace:
+
+```bash
+sudo ./tdx-attest.sh -d <command>
+```
+
+---
+
+## Appendix — JWT & EAR tokens
+
+**What is a JWT?**
+A **JWT (JSON Web Token)** is a standard format (RFC 7519) for carrying
+signed data as a single string. It has three base64url-encoded parts
+separated by dots:
+
+```
+header.payload.signature
+```
+
+- **header** — signing algorithm and key type
+- **payload** — the actual claims (JSON data)
+- **signature** — cryptographic proof the content wasn't tampered with
+
+In this flow, the **EAR token** from CoCo-AS is a JWT whose payload contains:
+
+- the measured claims (MRTD, RTMR registers, TDX module info)
+- `allow: true/false` — the policy decision
+- issuer and expiry
+
+**What is EAR?**
+EAR = **EAT Attestation Result**. It's a standard JWT format built on the IETF
+Entity Attestation Token (EAT, RFC 9711), as used by the Confidential
+Containers / Trustee ecosystem.
+
+The raw TDX quote is complex (binary, Intel-specific). The EAR token:
+
+1. **Normalizes** it into standard JSON
+2. **Adds the policy decision** (`allow`)
+3. **Makes it portable** — KBS doesn't need to understand TDX, just verify the
+   JWT signature and read `allow`
+
+The EAR token is the **bridge** between hardware-specific attestation and
+generic secret delivery.
+
+**Why it's used:** KBS receives the token, verifies its signature with the
+JWKS (the public key set from Step 4), and trusts the claims *without*
+re-doing the whole attestation. The token is portable proof that "this guest
+was verified" — that's why the script can use it as a bearer token in Step 9.
 
 ---
 
@@ -1161,23 +1423,6 @@ Debug any step with full command trace:
 ```bash
 sudo ./tdx-attest.sh -d <command>
 ```
-
----
-
-## Attestation Process — Visual Overview
-
-A full visual of the process — guest vs host placement, local (DCAP QVL)
-vs remote (Trustee) verification paths, and the RCAR sequence. The editable
-source (mermaid) is in [intel-tdx-attestation-graph.md](intel-tdx-attestation-graph.md);
-the diagrams below are rendered as SVG so they survive HTML conversion.
-
-**Main flow — local vs remote verification (blue = guest, orange = host):**
-
-![Intel TDX attestation main flow](intel-tdx-attestation-flow.svg)
-
-**Remote path — RCAR sequence:**
-
-![Intel TDX attestation RCAR sequence](intel-tdx-attestation-sequence.svg)
 
 ---
 
@@ -1298,52 +1543,9 @@ the diagrams below are rendered as SVG so they survive HTML conversion.
 
 ---
 
-## Appendix — JWT & EAR tokens
-
-**What is a JWT?**
-A **JWT (JSON Web Token)** is a standard format (RFC 7519) for carrying
-signed data as a single string. It has three base64url-encoded parts
-separated by dots:
-
-```
-header.payload.signature
-```
-
-- **header** — signing algorithm and key type
-- **payload** — the actual claims (JSON data)
-- **signature** — cryptographic proof the content wasn't tampered with
-
-In this flow, the **EAR token** from CoCo-AS is a JWT whose payload contains:
-
-- the measured claims (MRTD, RTMR registers, TDX module info)
-- `allow: true/false` — the policy decision
-- issuer and expiry
-
-**What is EAR?**
-EAR = **EAT Attestation Result**. It's a standard JWT format built on the IETF
-Entity Attestation Token (EAT, RFC 9711), as used by the Confidential
-Containers / Trustee ecosystem.
-
-The raw TDX quote is complex (binary, Intel-specific). The EAR token:
-
-1. **Normalizes** it into standard JSON
-2. **Adds the policy decision** (`allow`)
-3. **Makes it portable** — KBS doesn't need to understand TDX, just verify the
-   JWT signature and read `allow`
-
-The EAR token is the **bridge** between hardware-specific attestation and
-generic secret delivery.
-
-**Why it's used:** KBS receives the token, verifies its signature with the
-JWKS (the public key set from Step 4), and trusts the claims *without*
-re-doing the whole attestation. The token is portable proof that "this guest
-was verified" — that's why the script can use it as a bearer token in Step 9.
-
----
-
 ## License
 
-Copyright (C) 2026 aginies  
+Copyright (C) 2026 aginies
 Source: [https://github.com/aginies/coco_tdx](https://github.com/aginies/coco_tdx)
 
 This program is free software: you can redistribute it and/or modify it under
