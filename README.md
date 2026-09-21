@@ -17,12 +17,12 @@ The whole process has two sides:
 
 ---
 
-## Quick Start — 10 commands on a ready host
+## Quick Start — 11 commands on a ready host
 
 **Goal in one sentence:** prove to a remote verifier that the guest is a genuine,
 untampered TDX Trust Domain, and only then hand it a secret.
 
-**The happy path (10 commands):**
+**The happy path (11 commands):**
 
 ```bash
 # 1. Host preparation & platform check
@@ -40,6 +40,7 @@ virsh console tdx-guest                    # install from ISO (or any other view
 sudo ./tdx-attest.sh show-vm-info              # get GUEST_IP
 
 # 3. Guest preparation + attestation
+sudo ./tdx-attest.sh setup-guest --guest-ip <GUEST_IP>
 sudo ./tdx-attest.sh attest      --guest-ip <GUEST_IP> --register-rv
 
 # 4. Secret delivery
@@ -120,6 +121,7 @@ the diagrams below are rendered as SVG so they survive HTML conversion.
 | [9. secret-get (secret delivery)](#step-9--secret-delivery) | No | Yes (guest→KBS) | No | Only if already done |
 | [10. verify (consistency check)](#step-10--verify-everything-is-consistent-any-time) | No | No | No | **Recommended anytime** |
 | [11. clean (cleanup)](#step-11--cleanup-when-done) | Yes (destroys VM) | No | No | Only when done |
+| [12. Air-gapped / offline setup](#step-12--air-gapped--offline-setup-optional) | Yes (PCCS, QCNL) | Yes (local PCCS) | No | **Yes** (only for offline hosts) |
 
 ---
 
@@ -368,7 +370,7 @@ individually.
 sudo ./tdx-attest.sh check
 ```
 
-**What it does:** runs 12 read-only probes (or 13 with `--check-platform`). No changes, no root strictly
+**What it does:** runs 13 read-only probes (or 14 with `--check-platform`). No changes, no root strictly
 required.
 
 **Why each probe exists:**
@@ -379,6 +381,7 @@ required.
 | KVM | `stat /dev/kvm` | No `/dev/kvm` → no VMs at all. |
 | libvirt | `virsh -c qemu:///system version` | A successful connection proves libvirt works. Works for both the modular layout (SLES 16: `virtqemud` socket-activated) and the old monolithic one. |
 | QEMU version | `qemu-system-x86_64 --version` | TDX support requires QEMU ≥ 8.0. |
+| virt-customize | `command -v virt-customize` | guestfs-tools does the offline SSH-key injection in `setup-vm`. WARN only — the rest of the flow still works without it. |
 | QEMU TDX object | `qemu-system-x86_64 -object help` | TDX is a QEMU *object* (`tdx-guest`), not a machine type — so we probe the object list, not `-machine help`. |
 | TDX OVMF firmware | scan `/usr/share/qemu/firmware/*.json` | A TDX-specific UEFI firmware must exist to boot the TD. |
 | TDX module | `dmesg \| grep 'TDX-Module initialized'` | |
@@ -631,6 +634,7 @@ sudo ./tdx-attest.sh setup-vm --guest-iso /path/to/SLE-16.1.iso
 | `--ssh-key PATH` | `~/.ssh/id_ed25519` | SSH keypair to generate/inject |
 | `--virt-install` / `--no-virt-install` | `auto` | VM creation engine: `virt-install` if available, else generated XML |
 | `--vnc-listen ADDR` | `0.0.0.0` | VNC listen address (use `127.0.0.1` for host-local only) |
+| `--vnc-port PORT` | `5900` | Fixed VNC port (instead of libvirt autoport) |
 | `--dry-run` | *(off)* | Print the `virt-install` command without executing (no root needed) |
 | `--no-tdx` | *(off)* | Create regular non-TDX VM (for later `convert-tdx`) |
 
@@ -775,7 +779,7 @@ through the console.
 > **Tip — Guest IP auto-detection:**
 > When only one VM is running, subsequent commands (`setup-guest`, `attest`, `register-rv`, `secret-get`) will auto-detect the guest IP if `--guest-ip` is omitted.
 
-1. **If you skipped key injection (fresh disk), inject it now:**
+4. **If you skipped key injection (fresh disk), inject it now:**
 
    ```bash
    sudo virt-customize -a /var/lib/libvirt/images/tdx-guest.qcow2 \
@@ -917,12 +921,15 @@ sudo ./tdx-attest.sh attest --guest-ip <GUEST_IP> --register-rv
 4. **Submits it to CoCo-AS** with:
 
    ```bash
-   grpcurl -plaintext -import-path protos -proto attestation.proto -d @ 127.0.0.1:3000 \
+   grpcurl -plaintext -import-path "$PROTO_DIR" -proto attestation.proto -d @ 127.0.0.1:3000 \
        attestation.AttestationService/AttestationEvaluate < req.json
    ```
 
    - *Why grpcurl:* CoCo-AS speaks gRPC; grpcurl is the standard CLI for
-     calling gRPC services without writing code. `tdx-attest.sh` automatically installs
+     calling gRPC services without writing code. `$PROTO_DIR` is resolved at
+     runtime — an existing `attestation.proto` (repo `protos/`, `/etc/trustee`,
+     …) is used if present, otherwise the script writes one to
+     `/tmp/trustee-protos/`. `tdx-attest.sh` automatically installs
      prebuilt `grpcurl` into `/usr/local/bin` (or `~/.local/bin`) if missing.
    - *What CoCo-AS does with it:* verifies the QGS signature, fetches PCK
      collateral from Intel PCS (or a local PCCS cache), checks the TCB status, compares measurements
@@ -954,10 +961,10 @@ The `attest` command decodes the EAR token (a JWT built on EAT, RFC 9711): extra
     TDX Module (MRSEAM):    2d2d09cffbb74f850e04fcf1f40d6c41...
   Guest Launch Measurements:
     MRTD (TD Build):        52ffcc966ddecef5badce4f6715b0cb8...
-    RTMR 0 (SEAM):              db6fb215385b6f0f5124eaf26dd9440a...
-    RTMR 1 (TDVF):              ef68a00f527204a599082ae0510e991b...
-    RTMR 2 (Bootloader/Kernel): 14e943761f4c826c1ea2ebb27f1af4cd...
-    RTMR 3 (Guest OS):          ad0355928a1ff9772f0912d168a085b7...
+    RTMR 0 (TDVF config):       db6fb215385b6f0f5124eaf26dd9440a...
+    RTMR 1 (Bootloader/Kernel): ef68a00f527204a599082ae0510e991b...
+    RTMR 2 (Cmdline/Initrd):    14e943761f4c826c1ea2ebb27f1af4cd...
+    RTMR 3 (Runtime/Guest OS):  ad0355928a1ff9772f0912d168a085b7...
     XFAM (Features):        e71a060000000000
   Trustee Appraisal Result (RVPS):
     EAR Status:             contraindicated
@@ -976,9 +983,10 @@ The `attest` command decodes the EAR token (a JWT built on EAT, RFC 9711): extra
 Intel DCAP hardware verification AND Trustee appraisal passed!
 ```
 
-**Enrolling Reference Values into RVPS:**
+### Enrolling reference values into RVPS
 
-Trustee 0.20's default appraisal policy requires `mr_td`, `rtmr_1`, `rtmr_2`, and `xfam` to match approved reference values stored in the Reference Value Provider Service (RVPS). You can enroll the guest's measurements directly:
+The default appraisal policy of the Trustee 0.20 attestation-request format used
+by this script requires `mr_td`, `rtmr_1`, `rtmr_2`, and `xfam` to match approved reference values stored in the Reference Value Provider Service (RVPS). You can enroll the guest's measurements directly:
 
 ```bash
 # Enroll reference values and attest in one step:
@@ -997,14 +1005,16 @@ A TDX Trust Domain has four 48-byte, extend-only measurement registers
 
 | Register | Measures | Extended by | Stability |
 | --- | --- | --- | --- |
-| **RTMR 0** | SEAM module (TDX firmware) | TDX module at boot | Static per SEAM version |
-| **RTMR 1** | TDVF (virtual firmware / OVMF) | Virtual firmware at boot | Static per image |
-| **RTMR 2** | Guest bootloader + kernel + cmdline | Bootloader (grub/td-shim), then runtime extends (below) | **Dynamic** |
-| **RTMR 3** | Guest OS | OS runtime extends | Dynamic |
+| **RTMR 0** | TDVF configuration + boot variables (virtual firmware / OVMF) | Virtual firmware at boot | Static per firmware image + VM config |
+| **RTMR 1** | Guest bootloader and kernel image | Virtual firmware / bootloader | Static per kernel image |
+| **RTMR 2** | Kernel cmdline, initrd, boot applications; runtime extends (below) | Bootloader, then anything calling `tdx_att_extend` | **Dynamic** |
+| **RTMR 3** | Reserved for the guest OS / workload at runtime | OS runtime extends | Dynamic |
 
-`MRTD` is the separate *build-time* measurement of the initial TD memory
-(static, set at launch). RTMR 0/1 are stable for a given SEAM module + TDVF
-image; RTMR 2/3 are where boot and runtime activity shows up.
+The SEAM module (TDX firmware) is **not** measured into an RTMR — it is
+reported separately as `MRSEAM` / `tee_tcb_svn` in the quote body. `MRTD` is
+the *build-time* measurement of the initial TD memory (static, set at launch).
+RTMR 0/1 are stable for a given TDVF + kernel image; RTMR 2/3 are where boot
+configuration and runtime activity show up.
 
 ### Understanding `ear.status: warning` & the RTMR 2 mismatch
 
@@ -1017,7 +1027,7 @@ You may see `ear.status: warning` instead of `affirming`. The cause chain:
    status down.
 
 2. **`executables` requires RTMR 2 to match an enrolled reference value.**
-   Trustee 0.20's default policy scores `executables` by checking that
+   The default Trustee policy scores `executables` by checking that
    `rtmr_1` and `rtmr_2` match approved values in the RVPS.
 
 3. **But the quote tool changes RTMR 2 on every run.** `test_tdx_attest` —
@@ -1329,30 +1339,6 @@ sudo pccs-sync --url https://api.trustedservices.intel.com/tdx/certification/v4/
 > on a host that has intermittent internet access) to keep PCCS collateral
 > up-to-date with the latest TCB levels and CVE advisories.
 
-| Symptom | Likely cause | What to do |
-| --- | --- | --- |
-| QEMU/libvirt fail at launch: "TDX not supported" | `kvm_intel.tdx` missing from kernel command line | Add `kvm_intel.tdx=1` to GRUB cmdline, regenerate GRUB config, reboot. Check: `cat /sys/module/kvm_intel/parameters/tdx` should be `Y` |
-| QGS logs HTTP 404 / "No certificate data for this platform" / error `0xe011` or `0xe01b` | Platform not registered with Intel Registration Service (Xeon 6 / Scalable platforms) | Run `sudo ./tdx-attest.sh register-platform --subscription <KEY>` or `sudo pccs-check.sh register --subscription <KEY>` |
-| `modprobe tdx_guest` → "No such device" inside guest | VM not launched as a TD | `sudo ./tdx-attest.sh verify` → VM TDX rows; check ROM loader + launchSecurity |
-| Installer never appears; guest boots but isn't a TD | pflash loader instead of ROM | `virsh dumpxml` — loader must be `type='rom'` |
-| `test_tdx_attest`: "Failed to get the report" | QGS misconfigured on host | `setup-guest` prints a 6-item pre-flight table — fix the red row |
-| Attestation: `ear.status: contraindicated` | RVPS values missing or mismatched | Run `sudo ./tdx-attest.sh attest --guest-ip <GUEST_IP> --register-rv` or check `journalctl -u grpc-as.service -n 50` |
-| Attestation: `ear.status: warning` | `rtmr_2` mismatch: the quote tool (`test_tdx_attest`) extends RTMR 2/3 on every run, so a fresh quote never matches the enrolled value | Hardware verification still passes (TCB UpToDate). To see a clean `affirming`, run `tdx-attest.sh attest --guest-ip <GUEST_IP> --register-rv` (same-quote re-evaluation). Plain `attest` stays `warning` until a non-extending quote tool is used. |
-| In-guest `secret-get`: `Eventlog does not pass measurement replay ... Register [index = 3]` | The guest's RTMR 3 was extended at runtime (by a previous `attest`/`register-rv` run), so the boot-time CC event log no longer replays | Reboot the guest (resets the RTMRs), or use `secret-get --mode host` (sends no event log — no reboot needed) |
-| KBS rejects tokens: `neither trusted jwk set nor trusted pem public key works` | Token header embeds a `jwk` but the `x5c` chain is empty or doesn't chain to `trusted_certs_paths` | `sudo ./tdx-attest.sh setup-trustee` (regenerates `/etc/trustee/as-signer.crt`, `grpc-as.json` `cert_path`, `kbs.json` `trusted_certs_paths`); or `verify` → JWKS rows |
-| `trustee.service` reports `inactive` / condition failed | The monolithic `trustee.service` is intentionally disabled in favor of individual modular units | Expected behavior. Verify the active modular services: `systemctl is-active grpc-as kbs rvps qgsd` |
-| Guest kbs-client missing or lacks TDX attester | `trustee` package too old (< 0.21) | Install/upgrade the `trustee` package from the SGX repo, then re-run `sudo ./tdx-attest.sh setup-guest --guest-ip <GUEST_IP>` |
-| Guest can't reach KBS (secret-get times out) | Host firewall blocks 8080, wrong guest IP, or libvirt NAT issue | From the guest: `curl -sI http://<HOST_IP>:8080` — check the host firewall (`sudo firewall-cmd --list-ports`) and re-fetch the IP with `virsh net-dhcp-leases default` |
-| Local PCCS reports TLS certificate errors | Self-signed or private root CA not trusted | Pass `--pccs-ca /path/to/pccs-ca.pem` to `setup-host` or supply `--insecure` |
-| `grpcurl: command not found` | Auto-installed grpcurl not in PATH | The script installs it to `/usr/local/bin` (root) or `~/.local/bin` — check `echo $PATH`, or re-run `attest` as root so it lands in `/usr/local/bin` |
-| Quotes work, then break after host reboot | `/run/dcap/qcnl.conf` wiped (tmpfs) | `systemctl status qgsd-setup.service` — it should restore it |
-
-Debug any step with full command trace:
-
-```bash
-sudo ./tdx-attest.sh -d <command>
-```
-
 ---
 
 ## Appendix — JWT & EAR tokens
@@ -1421,8 +1407,11 @@ was verified" — that's why the script can use it as a bearer token in Step 9.
 Debug any step with full command trace:
 
 ```bash
-sudo ./tdx-attest.sh -d <command>
+sudo ./tdx-attest.sh <command> -d
 ```
+
+> **Note:** options always come **after** the command — `tdx-attest.sh -d check`
+> is rejected with `Unknown option: check`.
 
 ---
 
