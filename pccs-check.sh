@@ -830,6 +830,8 @@ cmd_tcb() {
 
 cmd_pckcert() {
     log_section "PCK Certificate Request"
+    local base_url
+    base_url=$(get_pccs_base_url)
 
     if [[ -z "$PLATFORM_MANIFEST" && -z "$ENCRYPTED_PPID" ]]; then
         auto_detect_platform || true
@@ -852,7 +854,7 @@ cmd_pckcert() {
             }' 2>/dev/null) || body="{\"platformManifest\": \"${PLATFORM_MANIFEST}\"}"
 
         log_info "Sending Platform Manifest to PCCS..."
-        pccs_post "${PCCS_URL}pckcert" "$body"
+        pccs_post "${base_url}pckcert" "$body"
 
         if [[ "$PCCS_HTTP_CODE" == "200" ]]; then
             log_info "PCK Certificate retrieved (HTTP ${PCCS_HTTP_CODE})"
@@ -872,7 +874,7 @@ cmd_pckcert() {
     if [[ -n "$ENCRYPTED_PPID" ]]; then
         log_info "Using encrypted PPID (single-socket platform)"
 
-        local url="${PCCS_URL}pckcert?encrypted_ppid=${ENCRYPTED_PPID}"
+        local url="${base_url}pckcert?encrypted_ppid=${ENCRYPTED_PPID}"
 
         if [[ -n "$CPUSVN" ]]; then
             url+="&cpusvn=${CPUSVN}"
@@ -913,6 +915,8 @@ cmd_pckcert() {
 
 cmd_pckcerts() {
     log_section "All PCK Certificates (All TCB Levels)"
+    local base_url
+    base_url=$(get_pccs_base_url)
 
     if [[ -z "$PLATFORM_MANIFEST" && -z "$ENCRYPTED_PPID" ]]; then
         auto_detect_platform || true
@@ -930,7 +934,7 @@ cmd_pckcerts() {
                 pceid: ($pceid | if . == "" then empty else . end)
             }' 2>/dev/null) || body="{\"platformManifest\": \"${PLATFORM_MANIFEST}\"}"
 
-        pccs_post "${PCCS_URL}pckcerts" "$body"
+        pccs_post "${base_url}pckcerts" "$body"
 
         if [[ "$PCCS_HTTP_CODE" == "200" ]]; then
             log_info "PCK Certificates retrieved (HTTP ${PCCS_HTTP_CODE})"
@@ -949,7 +953,7 @@ cmd_pckcerts() {
 
     if [[ -n "$ENCRYPTED_PPID" ]]; then
         log_info "Using encrypted PPID for all TCB levels"
-        local url="${PCCS_URL}pckcerts?encrypted_ppid=${ENCRYPTED_PPID}"
+        local url="${base_url}pckcerts?encrypted_ppid=${ENCRYPTED_PPID}"
         if [[ -n "$PCEID" ]]; then
             url+="&pceid=${PCEID}"
         fi
@@ -986,10 +990,12 @@ cmd_pckcrl() {
     fi
 
     log_section "PCK Certificate Revocation List"
+    local base_url
+    base_url=$(get_pccs_base_url)
     log_info "CA Type: ${CRL_CA}"
     log_info "Encoding: ${CRL_ENCODING}"
 
-    local url="${PCCS_URL}pckcrl?ca=${CRL_CA}"
+    local url="${base_url}pckcrl?ca=${CRL_CA}"
     if [[ "$CRL_ENCODING" != "pem" ]]; then
         url+="&encoding=${CRL_ENCODING}"
     fi
@@ -1288,7 +1294,7 @@ cmd_check() {
     # Check 2: CRL (revocation)
     log_section "2. Revocation List Check"
     for ca_type in processor platform; do
-        local crl_url="${PCCS_URL}pckcrl?ca=${ca_type}"
+        local crl_url="${base_url}pckcrl?ca=${ca_type}"
         pccs_get "$crl_url"
         if [[ "$PCCS_HTTP_CODE" == "200" ]]; then
             log_info "CRL available for CA: ${ca_type}"
