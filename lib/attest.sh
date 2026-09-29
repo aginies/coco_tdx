@@ -30,7 +30,7 @@ attest_evaluate_quote() {
     # The JSON bytes are then encoded using URL-safe base64 without padding (RFC 4648 §5).
     local tdx_evidence_json="{\"quote\":\"${quote_b64}\"}"
     local evidence_b64
-    evidence_b64=$(printf '%s' "$tdx_evidence_json" | base64 -w0 | tr '+/' '-_' | tr -d '=')
+    evidence_b64=$(printf '%s' "$tdx_evidence_json" | b64url_encode)
 
     local runtime_data_block=""
     if [[ -n "$runtime_data_json" ]]; then
@@ -143,6 +143,30 @@ attest_get_ear_token_with_tee_key() {
     LAST_QUOTE_B64="$quote_b64"
     attest_evaluate_quote "$quote_b64" "$structured"
 }
+
+# Decode the payload segment (2nd dot-separated part) of a JWT: base64url ->
+# base64 (re-padding as needed) -> JSON text on stdout.
+jwt_decode_payload() {
+    local token="$1" payload
+    payload=$(echo "$token" | cut -d. -f2)
+    payload="${payload//-/+}"
+    payload="${payload//_//}"
+    case $((${#payload} % 4)) in
+    2) payload+="==" ;;
+    3) payload+="=" ;;
+    esac
+    echo "$payload" | base64 -d 2>/dev/null
+}
+
+# test_tdx_attest extends RTMR2/RTMR3 on every run; warn that in-guest
+# secret-get (kbs-client) cannot pass CC-eventlog replay until the guest
+# reboots.
+warn_rtmr3_extended() {
+    warn "Quote fetch ran test_tdx_attest, which EXTENDS RTMR2/RTMR3 at runtime."
+    warn "In-guest 'secret-get' (kbs-client) now fails CC-eventlog replay until the guest reboots."
+    warn "Use 'secret-get --mode host' (no reboot needed) or reboot the guest first."
+}
+
 register_rvps_reference_values() {
     local mr_td="$1" rtmr_1="$2" rtmr_2="$3" xfam="$4"
     ensure_attestation_proto
@@ -240,16 +264,8 @@ cmd_register_rv() {
 
     attest_get_ear_token
     local token="$EAR_TOKEN"
-    local payload
-    payload=$(echo "$token" | cut -d. -f2)
-    payload="${payload//-/+}"
-    payload="${payload//_//}"
-    case $((${#payload} % 4)) in
-    2) payload+="==" ;;
-    3) payload+="=" ;;
-    esac
     local jwt_json=""
-    jwt_json=$(echo "$payload" | base64 -d 2>/dev/null) || jwt_json=""
+    jwt_json=$(jwt_decode_payload "$token") || jwt_json=""
 
     local mr_td="" rtmr_1="" rtmr_2="" xfam=""
     if command -v python3 >/dev/null 2>&1; then
@@ -297,9 +313,7 @@ except Exception:
     log "  xfam:   $xfam"
     log "============================================================================="
     log "Now re-run './tdx-attest.sh attest --guest-ip ${GUEST_IP}' to verify ear.status = affirming."
-    warn "Quote fetch ran test_tdx_attest, which EXTENDS RTMR2/RTMR3 at runtime."
-    warn "In-guest 'secret-get' (kbs-client) now fails CC-eventlog replay until the guest reboots."
-    warn "Use 'secret-get --mode host' (no reboot needed) or reboot the guest first."
+    warn_rtmr3_extended
 }
 
 cmd_attest() {
@@ -312,21 +326,12 @@ cmd_attest() {
     local token="$EAR_TOKEN"
 
     log "Decoding EAR JWT payload"
-    local payload
-    payload=$(echo "$token" | cut -d. -f2)
-    # base64url -> base64
-    payload="${payload//-/+}"
-    payload="${payload//_//}"
-    case $((${#payload} % 4)) in
-    2) payload+="==" ;;
-    3) payload+="=" ;;
-    esac
     local jwt_json=""
     if command -v python3 >/dev/null 2>&1; then
-        jwt_json=$(echo "$payload" | base64 -d 2>/dev/null | python3 -m json.tool) || jwt_json=""
+        jwt_json=$(jwt_decode_payload "$token" | python3 -m json.tool) || jwt_json=""
         [[ -n "$jwt_json" ]] && echo "$jwt_json"
     else
-        jwt_json=$(echo "$payload" | base64 -d 2>/dev/null) || jwt_json=""
+        jwt_json=$(jwt_decode_payload "$token") || jwt_json=""
         [[ -n "$jwt_json" ]] && echo "$jwt_json"
     fi
     [[ -n "$jwt_json" ]] || warn "Could not decode JWT payload"
@@ -405,14 +410,7 @@ except Exception:
             log "Re-evaluating the same registered quote to obtain updated EAR token..."
             attest_evaluate_quote "$LAST_QUOTE_B64"
             token="$EAR_TOKEN"
-            payload=$(echo "$token" | cut -d. -f2)
-            payload="${payload//-/+}"
-            payload="${payload//_//}"
-            case $((${#payload} % 4)) in
-            2) payload+="==" ;;
-            3) payload+="=" ;;
-            esac
-            jwt_json=$(echo "$payload" | base64 -d 2>/dev/null) || jwt_json=""
+            jwt_json=$(jwt_decode_payload "$token") || jwt_json=""
             if command -v python3 >/dev/null 2>&1; then
                 ear_status=$(python3 -c "
 import sys, json
@@ -426,9 +424,7 @@ except Exception:
                 ear_status=$(echo "$jwt_json" | grep -oP '"ear\.status"\s*:\s*"\K[^"]+' | head -n1 || true)
             fi
         fi
-        warn "Quote fetch ran test_tdx_attest, which EXTENDS RTMR2/RTMR3 at runtime."
-        warn "In-guest 'secret-get' (kbs-client) now fails CC-eventlog replay until the guest reboots."
-        warn "Use 'secret-get --mode host' (no reboot needed) or reboot the guest first."
+        warn_rtmr3_extended
     fi
 
     echo ""

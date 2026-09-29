@@ -343,28 +343,40 @@ check_collateral_net() {
     fi
 }
 
-check_platform_validity() {
+# Resolve the pccs-check.sh path: prefer the copy next to tdx-attest.sh,
+# fall back to PATH. Prints the path; returns 1 if not found.
+resolve_pccs_check() {
     local pccs_check="${SCRIPT_DIR}/pccs-check.sh"
-    if [[ ! -x "$pccs_check" ]]; then
-        if command -v pccs-check.sh >/dev/null 2>&1; then
-            pccs_check="pccs-check.sh"
-        else
-            record "WARN" "pccs-check.sh not found (cannot perform deep platform validity check)" \
-                "Place pccs-check.sh alongside tdx-attest.sh or install in PATH"
-            return
-        fi
+    if [[ -x "$pccs_check" ]]; then
+        echo "$pccs_check"
+        return 0
     fi
+    command -v pccs-check.sh >/dev/null 2>&1 && echo "pccs-check.sh"
+}
 
-    local args=("check" "--auto" "--tdx")
+# Build the pccs-check.sh 'check' argument list for the current collateral
+# mode into the global PLATFORM_CHECK_ARGS.
+platform_check_args() {
+    PLATFORM_CHECK_ARGS=("check" "--auto" "--tdx")
     if [[ "$COLLATERAL_MODE" == "pccs" ]]; then
-        args+=("--pccs-url" "$PCCS_URL")
+        PLATFORM_CHECK_ARGS+=("--pccs-url" "$PCCS_URL")
     else
-        args+=("--pccs-url" "$PCS_URL")
+        PLATFORM_CHECK_ARGS+=("--pccs-url" "$PCS_URL")
+    fi
+}
+
+check_platform_validity() {
+    local pccs_check
+    if ! pccs_check=$(resolve_pccs_check); then
+        record "WARN" "pccs-check.sh not found (cannot perform deep platform validity check)" \
+            "Place pccs-check.sh alongside tdx-attest.sh or install in PATH"
+        return
     fi
 
-    log "Probing platform validity via ${pccs_check} ${args[*]}..."
+    platform_check_args
+    log "Probing platform validity via ${pccs_check} ${PLATFORM_CHECK_ARGS[*]}..."
     local out
-    if out=$("$pccs_check" "${args[@]}" 2>&1); then
+    if out=$("$pccs_check" "${PLATFORM_CHECK_ARGS[@]}" 2>&1); then
         local detected_source
         detected_source=$(echo "$out" | grep -m1 'Source:' | sed 's/.*Source:[ \t]*//' || true)
         local fmspc
@@ -382,25 +394,14 @@ cmd_check_platform() {
     log "=== Checking TDX platform validity against Intel PCS/PCCS ==="
     step "Auto-discover platform identifiers and verify TCB status & collateral" \
         "Queries local PCK certs / PCKIDRetrievalTool / CPU model to populate FMSPC and verify against PCS."
-    local pccs_check="${SCRIPT_DIR}/pccs-check.sh"
-    if [[ ! -x "$pccs_check" ]]; then
-        if command -v pccs-check.sh >/dev/null 2>&1; then
-            pccs_check="pccs-check.sh"
-        else
-            die "pccs-check.sh not found. Ensure pccs-check.sh is in the same directory as tdx-attest.sh."
-        fi
-    fi
+    local pccs_check
+    pccs_check=$(resolve_pccs_check) ||
+        die "pccs-check.sh not found. Ensure pccs-check.sh is in the same directory as tdx-attest.sh."
 
-    local args=("check" "--auto" "--tdx")
-    if [[ "$COLLATERAL_MODE" == "pccs" ]]; then
-        args+=("--pccs-url" "$PCCS_URL")
-    else
-        args+=("--pccs-url" "$PCS_URL")
-    fi
-
-    log "Executing: ${pccs_check} ${args[*]}"
+    platform_check_args
+    log "Executing: ${pccs_check} ${PLATFORM_CHECK_ARGS[*]}"
     local rc=0
-    "$pccs_check" "${args[@]}" || rc=$?
+    "$pccs_check" "${PLATFORM_CHECK_ARGS[@]}" || rc=$?
     if ((rc != 0)); then
         trap - ERR
         return $rc
@@ -412,14 +413,9 @@ cmd_register_platform() {
     log "=== Registering TDX platform with Intel SGX Registration Service ==="
     step "Automated platform manifest extraction and registration" \
         "Extracts hardware manifest via PCKIDRetrievalTool/UEFI, converts hex to binary, and submits to Intel Registration Service."
-    local pccs_check="${SCRIPT_DIR}/pccs-check.sh"
-    if [[ ! -x "$pccs_check" ]]; then
-        if command -v pccs-check.sh >/dev/null 2>&1; then
-            pccs_check="pccs-check.sh"
-        else
-            die "pccs-check.sh not found. Ensure pccs-check.sh is in the same directory as tdx-attest.sh."
-        fi
-    fi
+    local pccs_check
+    pccs_check=$(resolve_pccs_check) ||
+        die "pccs-check.sh not found. Ensure pccs-check.sh is in the same directory as tdx-attest.sh."
 
     local args=("register")
     if [[ -n "$SUBSCRIPTION_KEY" ]]; then

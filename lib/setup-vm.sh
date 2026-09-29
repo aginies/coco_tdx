@@ -1337,10 +1337,8 @@ EOF
     setup_collateral_source
     local guest_qcnl_url
     guest_qcnl_url=$(collateral_url)
-    local guest_secure="true"
-    if [[ "$USE_SECURE_CERT" == "false" || ("$USE_SECURE_CERT" == "auto" && "$guest_qcnl_url" =~ ^http://) ]]; then
-        guest_secure="false"
-    fi
+    local guest_secure
+    guest_secure=$(qcnl_secure_cert "$guest_qcnl_url")
     log "Writing QCNL config in guest (use_secure_cert=${guest_secure})"
     ssh_guest "sudo bash -s" <<EOF
 set -e

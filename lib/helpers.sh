@@ -17,6 +17,11 @@ require_cmd() {
     done
 }
 
+# Read stdin and print base64url without padding (RFC 4648 §5).
+b64url_encode() {
+    base64 -w0 | tr '+/' '-_' | tr -d '='
+}
+
 # Ensure grpcurl is available on the host (used to communicate with CoCo-AS gRPC service).
 # Automatically downloads and installs the official prebuilt binary if missing.
 ensure_grpcurl() {
@@ -242,8 +247,15 @@ kbs_url() {
     fi
 }
 
-# Ensure the KBS service user (coco_kbs) can traverse TRUSTEE_DIR to read the
-# admin public key and policy. The private key stays root-only (0600).
+# Resolve the kbs-client binary: $PATH first, then the distro package path
+# (kbs-client ships in the trustee package, not in $PATH).
+resolve_kbs_client_bin() {
+    local bin
+    bin="$(command -v kbs-client 2>/dev/null || true)"
+    [[ -n "$bin" ]] || bin="$(distro_kbs_client_bin)"
+    echo "$bin"
+}
+
 confirm() {
     local prompt="${1:-Continue?}"
     if ((FORCE)); then

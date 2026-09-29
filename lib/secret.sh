@@ -12,11 +12,8 @@ cmd_secret_set() {
     step "Upload a secret to the KBS as admin" \
         "Stores the file at resource path '${SECRET_PATH}'. The KBS releases it only to clients that pass attestation + resource policy."
 
-    # kbs-client ships in the trustee package (not in $PATH), so resolve the
-    # full path via the distro adapter.
     local kbs_client_bin
-    kbs_client_bin="$(command -v kbs-client 2>/dev/null || true)"
-    [[ -n "$kbs_client_bin" ]] || kbs_client_bin="$(distro_kbs_client_bin)"
+    kbs_client_bin="$(resolve_kbs_client_bin)"
     [[ -x "$kbs_client_bin" ]] || die "kbs-client not found (looked in \$PATH and ${kbs_client_bin}). Install the 'trustee' package first."
 
     if [[ -z "$SECRET_FILE" ]]; then

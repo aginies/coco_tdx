@@ -94,14 +94,23 @@ setup_collateral_source() {
 # The pccs_url field points at whichever collateral source is selected (global
 # PCS or local PCCS cache); the field name is DCAP's, even when it points at
 # the global PCS.
+# Effective use_secure_cert value for a QCNL config pointing at <url>:
+# explicit --insecure wins; in 'auto' mode plain-HTTP endpoints disable it.
+qcnl_secure_cert() {
+    local url="$1"
+    if [[ "$USE_SECURE_CERT" == "false" || ("$USE_SECURE_CERT" == "auto" && "$url" =~ ^http://) ]]; then
+        echo "false"
+    else
+        echo "true"
+    fi
+}
+
 write_qcnl_conf() {
     local target="${1:-$QCNL_RUN_CONF}"
     local url
     url=$(collateral_url)
-    local secure="true"
-    if [[ "$USE_SECURE_CERT" == "false" || ("$USE_SECURE_CERT" == "auto" && "$url" =~ ^http://) ]]; then
-        secure="false"
-    fi
+    local secure
+    secure=$(qcnl_secure_cert "$url")
     log "Writing QCNL config to ${target} (collateral=${COLLATERAL_MODE}, pccs_url=${url}, use_secure_cert=${secure})"
     mkdir -p "$(dirname "$target")"
     cat >"$target" <<EOF
@@ -552,12 +561,10 @@ EOF
     ss -tln 2>/dev/null | grep -E "[:.](${COCO_AS##*:}|${KBS_PORT})\b" || warn "Expected ports not listening yet"
 
     # Push the resource policy into the running KBS so secret release is governed.
-    # kbs-client ships in the trustee package (not in $PATH), so use the full
-    # path from the distro adapter. Admin mode is InsecureAllowAll (LAB),
-    # so no auth token is needed; kbs-client sends unauthenticated admin requests.
+    # Admin mode is InsecureAllowAll (LAB), so no auth token is needed;
+    # kbs-client sends unauthenticated admin requests.
     local kbs_client_bin
-    kbs_client_bin="$(command -v kbs-client 2>/dev/null || true)"
-    [[ -n "$kbs_client_bin" ]] || kbs_client_bin="$(distro_kbs_client_bin)"
+    kbs_client_bin="$(resolve_kbs_client_bin)"
     if [[ -x "$kbs_client_bin" ]]; then
         log "Waiting for KBS to listen on ${KBS_PORT}"
         if wait_for_port 127.0.0.1 "${KBS_PORT}" 30; then
@@ -682,8 +689,8 @@ ensure_as_signer_key() {
         die "Failed to parse EC public key coordinates from ${AS_SIGNER_PUB}"
     fi
     local x_b64 y_b64
-    x_b64=$(echo "$x" | xxd -r -p | base64 -w0 | tr '+/' '-_' | tr -d '=')
-    y_b64=$(echo "$y" | xxd -r -p | base64 -w0 | tr '+/' '-_' | tr -d '=')
+    x_b64=$(echo "$x" | xxd -r -p | b64url_encode)
+    y_b64=$(echo "$y" | xxd -r -p | b64url_encode)
     mkdir -p "$(dirname "$KBS_JWKS_FILE")"
     cat >"$KBS_JWKS_FILE" <<EOF
 {
