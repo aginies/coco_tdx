@@ -486,118 +486,12 @@ Check 'virt-install --help' / 'virt-install --version', or use --no-virt-install
 # edit_vm_xml_tdx). Element positions follow the libvirt canonical order
 # (see the working tdx-guest.xml reference).
 # Usage: patch_vm_xml_tdx <input_xml> <output_xml>
+# The heavy XML transformation is in tools/patch_vm_xml.py so it can be
+# unit-tested independently of the shell script.
 patch_vm_xml_tdx() {
     local input_xml="$1" output_xml="$2"
-    python3 - "$input_xml" "$output_xml" "$QGS_SOCKET" "$((VM_MEM * 1024 + 369090))" <<'PYEOF'
-import sys, xml.etree.ElementTree as ET
-
-input_xml, output_xml, qgs_socket = sys.argv[1], sys.argv[2], sys.argv[3]
-mem_hard_limit = int(sys.argv[4])
-ET.register_namespace('', '')
-
-# virt-install 5.x --print-xml emits the domain TWICE: first the runtime
-# variant (with the one-shot <kernel>/<initrd>/<cmdline> installer boot,
-# cache="unsafe", and an <on_reboot>destroy</on_reboot> we do NOT want),
-# then the persistent variant (without the kernel, with <boot> order).
-# ElementTree rejects the concatenated output, so keep the first document
-# only and normalize it below.
-with open(input_xml) as fh:
-    content = fh.read()
-if content.count('<domain') > 1:
-    end = content.index('</domain>') + len('</domain>')
-    content = content[:end]
-root = ET.fromstring(content)
-
-# Drop <on_reboot>destroy</on_reboot> from the runtime variant: after the
-# install the guest must reboot into the installed OS, not be destroyed.
-for ob in root.findall('on_reboot'):
-    root.remove(ob)
-
-# The runtime variant lacks the <boot> order the persistent one has; a
-# stateless ROM loader needs it explicit. Insert after firmware/loader.
-os_el = root.find('os')
-if os_el is not None and os_el.find('boot') is None:
-    boot_devs = ['cdrom', 'hd']
-    insert_at = 1  # after <type>
-    for child in os_el:
-        if child.tag in ('firmware', 'loader'):
-            insert_at = list(os_el).index(child) + 1
-    for i, dev in enumerate(boot_devs):
-        os_el.insert(insert_at + i, ET.Element('boot', {'dev': dev}))
-
-# 1. launchSecurity: ensure TDX policy + QGS socket. libvirt may auto-add a
-#    bare <launchSecurity type='tdx'/> from the machine flag; make it explicit.
-ls = root.find('launchSecurity')
-if ls is None:
-    ls = ET.Element('launchSecurity', {'type': 'tdx'})
-    root.append(ls)  # canonical position: after <devices>
-else:
-    ls.set('type', 'tdx')
-for tag in ('policy', 'quoteGenerationService'):
-    for el in ls.findall(tag):
-        ls.remove(el)
-ET.SubElement(ls, 'policy').text = '0x10000000'
-ET.SubElement(ls, 'quoteGenerationService', {'path': qgs_socket})
-
-# 2. vsock (quote generation over vsock)
-devices = root.find('devices')
-if devices is not None and devices.find('vsock') is None:
-    vsock = ET.Element('vsock', {'model': 'virtio'})
-    ET.SubElement(vsock, 'cid', {'auto': 'yes'})
-    devices.append(vsock)
-
-# 3. memtune hard_limit (firmware + overhead headroom), after currentMemory
-for mb in root.findall('memtune'):
-    root.remove(mb)
-mt = ET.Element('memtune')
-ET.SubElement(mt, 'hard_limit', {'unit': 'KiB'}).text = str(mem_hard_limit)
-children = list(root)
-idx = next((i for i, c in enumerate(children) if c.tag == 'currentMemory'), 1)
-root.insert(idx + 1, mt)
-
-# 4. resource partition /machine, after vcpu
-if root.find('resource') is None:
-    res = ET.Element('resource')
-    ET.SubElement(res, 'partition').text = '/machine'
-    children = list(root)
-    idx = next((i for i, c in enumerate(children) if c.tag == 'vcpu'), 2)
-    root.insert(idx + 1, res)
-
-# 5. pm: TDX cannot hibernate — disable suspend-to-mem/disk, before <devices>
-pm = root.find('pm')
-if pm is None:
-    pm = ET.Element('pm')
-    if devices is not None:
-        root.insert(list(root).index(devices), pm)
-    else:
-        root.append(pm)
-for tag in ('suspend-to-mem', 'suspend-to-disk'):
-    el = pm.find(tag)
-    if el is None:
-        el = ET.SubElement(pm, tag)
-    el.set('enabled', 'no')
-
-# 6. qemu:commandline: with <launchSecurity type='tdx'> present, libvirt
-#    itself adds the tdx-guest object + confidential-guest-support machine
-#    flag. The explicit -object/-machine args virt-install left in the
-#    qemu-commandline would duplicate them and break TD init (KVM_TDX_INIT_
-#    VCPU EINVAL), so strip that pair (keep any other commandline args).
-NS = '{http://libvirt.org/schemas/domain/qemu/1.0}'
-for cl in root.findall(NS + 'commandline'):
-    args = cl.findall(NS + 'arg')
-    for i, arg in enumerate(args):
-        v = arg.get('value', '')
-        if v in ('-object', '-machine') and i + 1 < len(args):
-            nv = args[i + 1].get('value', '')
-            if (v == '-object' and nv.startswith('tdx-guest,')) or \
-               (v == '-machine' and nv.startswith('confidential-guest-support=')):
-                cl.remove(arg)
-                cl.remove(args[i + 1])
-    if not cl.findall(NS + 'arg'):
-        root.remove(cl)
-
-ET.ElementTree(root).write(output_xml, xml_declaration=True, encoding='unicode')
-PYEOF
+    python3 "${SCRIPT_DIR}/tools/patch_vm_xml.py" \
+        "$input_xml" "$output_xml" "$QGS_SOCKET" "$((VM_MEM * 1024 + 369090))"
 }
 
 # Inject the SSH key (and disable suspend) into the guest disk via
@@ -915,7 +809,7 @@ NEXT
 4. Then run the guest setup and attestation:
 
     sudo tdx-attest.sh setup-guest --guest-ip <GUEST_IP>
-    sudo tdx-attest.sh attest      --guest-ip <GUEST_IP>
+    sudo tdx-attest.sh attest      --guest-ip <GUEST_IP> --register-rv
 
 NEXT
     fi

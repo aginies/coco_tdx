@@ -1,0 +1,6 @@
+# Python bytecode caches
+__pycache__/
+*.pyc
+
+# Local AI session exports (not part of the project)
+ai-conversations/

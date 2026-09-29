@@ -44,6 +44,9 @@ cp -a "${SCRIPT_DIR}/README.md" "${SCRIPT_DIR}/LICENSE" \
  "${SCRIPT_DIR}/convert_doc.py" \
  "${STAGING_TAR}/"
 cp -a "${SCRIPT_DIR}/lib" "${STAGING_TAR}/"
+# tools/ is required at runtime: setup-vm.sh calls tools/patch_vm_xml.py and
+# setup-guest builds tools/tdx-quote-gen.c in the guest.
+cp -a "${SCRIPT_DIR}/tools" "${STAGING_TAR}/"
 
 # ── Build tarball ────────────────────────────────────────────────────────────
 echo "Creating ${TARBALL_PATH} ..."
