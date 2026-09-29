@@ -174,7 +174,7 @@ check_qemu_tdx() {
 # TDX firmware is mapped into guest RAM and loaded with QEMU '-bios' (a ROM
 # loader), NOT pflash. The SLE 16.1 descriptor points at
 # ovmf-x86_64-tdx-secureboot.bin, which is the correct (and proven working)
-# TDX OVMF — see sles16.0-test-tdx-working.xml.
+# TDX OVMF — see tdx-guest.xml (working reference in this repo).
 check_ovmf_tdx() {
     local fwdir
     fwdir=$(distro_ovmf_fwdir)

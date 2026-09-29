@@ -532,5 +532,3 @@ CONF
 systemctl try-restart systemd-logind || true
 EOF
 }
-
-# Effective KBS URL (explicit --kbs-url wins, else http://KBS_HOST:KBS_PORT).

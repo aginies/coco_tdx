@@ -26,7 +26,7 @@ generate_vm_xml() {
     fi
 
     # --- TDX mode: mirrors the proven working config
-    #     (sles16.0-test-tdx-working.xml, a virt-install --location direct kernel boot):
+    #     (tdx-guest.xml in this repo, a virt-install --location direct kernel boot):
     #   -bios OVMF.fd                 -> <loader type='rom' format='raw'>OVMF.fd</loader>
     #   -confidential-guest-support=tdx -> <launchSecurity type='tdx'/> (auto)
     #   -object tdx-guest,id=tdx      -> <launchSecurity type='tdx'/> (auto)
@@ -1077,9 +1077,9 @@ cmd_show_vm_info() {
     echo ""
 }
 
-# Auto-detect guest IP from running VMs if GUEST_IP is not set.
-# Lists running VMs with their IPs, auto-selects if only one, prompts otherwise.
-# Sets GUEST_IP on success; dies on failure.
+# Run the 6 QGS host-side pre-flight checks, recording PASS/FAIL/WARN into
+# CHECK_RESULTS. Caller must reset CHECK_RESULTS=() before calling and render
+# with print_results afterwards. Resolves GUEST_VM_NAME from GUEST_IP.
 qgs_preflight_checks() {
     # 1. QGS must run in unix-socket mode: QGSD_ARGS must NOT contain -p=
     local qgsd_args

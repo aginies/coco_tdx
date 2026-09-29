@@ -232,6 +232,8 @@ ssh_guest() {
             "${GUEST_USER}@${GUEST_IP}" "$cmd"
     fi
 }
+
+# Effective KBS URL (explicit --kbs-url wins, else http://KBS_HOST:KBS_PORT).
 kbs_url() {
     if [[ -n "$KBS_URL" ]]; then
         echo "$KBS_URL"
@@ -326,8 +328,6 @@ collateral_url() {
     fi
 }
 
-# Method 1: use the global Intel PCS directly as the collateral source.
-# No local setup needed; QCNL/CoCo-AS point straight at PCS_URL.
 ensure_libvirt() {
     if virsh -c qemu:///system version >/dev/null 2>&1; then
         log "libvirt reachable on qemu:///system"

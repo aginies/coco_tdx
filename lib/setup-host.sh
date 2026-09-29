@@ -12,7 +12,8 @@
 #                    "initial CA") and trusted; afterwards attestation
 #                    collateral traffic stays on the local network.
 
-# Effective collateral endpoint for QCNL / CoCo-AS, based on COLLATERAL_MODE.
+# Method 1: use the global Intel PCS directly as the collateral source.
+# No local setup needed; QCNL/CoCo-AS point straight at PCS_URL.
 collateral_via_pcs() {
     log "Collateral source: global PCS (${PCS_URL})"
 }
@@ -582,6 +583,9 @@ EOF
 
     log "Trustee setup complete. Store a secret with: ${SCRIPT_NAME} secret-set --file <f>"
 }
+
+# Ensure the KBS service user (coco_kbs) can traverse TRUSTEE_DIR to read the
+# admin public key and policy. The private key stays root-only (0600).
 prepare_trustee_dir() {
     mkdir -p "$TRUSTEE_DIR"
     if getent group coco_kbs >/dev/null 2>&1; then
