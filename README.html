@@ -32,7 +32,7 @@
 
 <header class="hero">
   <h1>Intel TDX Attestation — Step-by-Step Guide</h1>
-  <p>Version 1.0.0</p>
+  <p>Version 1.1.0</p>
 </header>
 
 
@@ -137,16 +137,16 @@ sudo ./tdx-attest.sh secret-get --guest-ip &lt;GUEST_IP&gt; --path default/test/
 cd coco_tdx</pre>
 <p>This gives you the full history, all branches, and the ability to update with <code>git pull</code>.</p>
 <p class="caption"><strong>Option 2 — Download a specific release tarball:</strong></p>
-<pre>VERSION="1.0.0"
+<pre>VERSION="1.1.0"
 curl -LO "https://github.com/aginies/coco_tdx/releases/download/v${VERSION}/coco_tdx-${VERSION}.tar.gz"
 tar xzf coco_tdx-${VERSION}.tar.gz
 cd coco_tdx-${VERSION}</pre>
 <p>The tarball contains a versioned subdirectory with all scripts, the library, and documentation — ready to use without Git.</p>
 <p class="caption"><strong>Option 3 — Download a single branch or tag:</strong></p>
 <pre># Download a specific tag without cloning the full repo
-curl -LO "https://github.com/aginies/coco_tdx/archive/refs/tags/v1.0.0.tar.gz"
-tar xzf v1.0.0.tar.gz
-cd coco_tdx-1.0.0</pre>
+curl -LO "https://github.com/aginies/coco_tdx/archive/refs/tags/v1.1.0.tar.gz"
+tar xzf v1.1.0.tar.gz
+cd coco_tdx-1.1.0</pre>
 <hr>
 <h2 id="prerequisites-before-any-script-command">Prerequisites <span>(before any script command)</span></h2>
 <table>
