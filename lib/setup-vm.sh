@@ -1235,7 +1235,11 @@ EOF
         log "tdx-quote-gen present in guest"
     else
         log "Building tdx-quote-gen in guest (needs gcc)"
-        ssh_guest "command -v gcc" >/dev/null 2>&1 || install_pkgs_guest gcc
+        if ! ssh_guest "command -v gcc" >/dev/null 2>&1; then
+            log "Installing gcc in guest (zypper)"
+            install_pkgs_guest gcc ||
+                die "Failed to install gcc in guest (needed to build tdx-quote-gen)"
+        fi
         ssh_guest "cat > ${GUEST_WORKDIR}/tdx-quote-gen.c" \
             <"${SCRIPT_DIR}/tools/tdx-quote-gen.c" ||
             die "Failed to copy tools/tdx-quote-gen.c to guest"
