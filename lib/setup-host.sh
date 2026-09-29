@@ -378,11 +378,18 @@ EOF
     write_resource_policy
 
     log "Writing KBS config: $KBS_CONF"
-    # insecure_http = true is a LAB setting (plain HTTP). For production, provide
-    # TLS certs and set insecure_http = false.
+    # SECURITY NOTE: the following settings are LAB/development defaults ONLY.
+    #   - insecure_http = true        : no TLS on the KBS HTTP listener
+    #   - authorization_mode = InsecureAllowAll : ANY client that passes
+    #     attestation can read ANY resource — no per-resource auth checks.
+    #     In production, replace with AuthenticatedAuthorization + bearer_jwt
+    #     and tighten the resource policy (write_resource_policy).
+    #   - insecure_http + InsecureAllowAll together mean: anyone who can
+    #     reach the KBS port (0.0.0.0) and pass a valid EAR token can
+    #     read every secret. Never expose this port to untrusted networks.
+    # For production: provide TLS certs (insecure_http=false), use
+    # AuthenticatedAuthorization, and write a restrictive rego policy.
     # SUSE kbs.service expects /etc/kbs.json (ConditionPathExists + --config-file).
-    # authorization_mode=InsecureAllowAll is a LAB setting; use
-    # AuthenticatedAuthorization + bearer_jwt in production.
     # trusted_jwk_sets must be file:// or https:// (http:// is rejected). We fetch
     # the CoCo-AS JWKS to a local file after grpc-as starts (see below).
     cat >"$KBS_CONF" <<EOF

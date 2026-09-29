@@ -102,7 +102,7 @@ ensure_attestation_proto() {
         "/etc/trustee"
         "/usr/share/trustee/protos"
         "/usr/share/trustee"
-        "/tmp/trustee-protos"
+        "/var/tmp/trustee-protos"
     )
     for dir in "${candidate_dirs[@]}"; do
         if [[ -f "${dir}/attestation.proto" ]]; then
@@ -113,8 +113,8 @@ ensure_attestation_proto() {
 
     # Write embedded proto if not found on disk
     if [[ -z "$PROTO_DIR" || ! -f "${PROTO_DIR}/attestation.proto" ]]; then
-        mkdir -p /tmp/trustee-protos
-        cat >/tmp/trustee-protos/attestation.proto <<'EOF'
+        mkdir -p /var/tmp/trustee-protos
+        cat >/var/tmp/trustee-protos/attestation.proto <<'EOF'
 syntax = "proto3";
 
 package attestation;
@@ -161,7 +161,7 @@ service AttestationService {
     rpc GetAttestationChallenge(ChallengeRequest) returns (ChallengeResponse) {};
 }
 EOF
-        PROTO_DIR="/tmp/trustee-protos"
+        PROTO_DIR="/var/tmp/trustee-protos"
     fi
 
     # Ensure reference.proto is also available in PROTO_DIR
