@@ -816,90 +816,17 @@ NEXT
     log "VM setup complete."
 }
 
-# Edit a libvirt domain XML in-place to add TDX support.
+# Edit a libvirt domain XML in-place to add TDX support (convert-tdx path).
+# Delegates to tools/patch_vm_xml.py --rom-loader — the single testable
+# implementation shared with the virt-install path (patch_vm_xml_tdx).
 # Preserves all existing elements (disk, network, graphics, video, UUID, MAC, etc.).
 # Changes: loader pflash->rom (stateless), removes nvram/memoryBacking/ioapic,
 # adds launchSecurity + vsock.
 # Usage: edit_vm_xml_tdx <input_xml> <output_xml> <tdx_ovmf_bin> <qgs_socket>
 edit_vm_xml_tdx() {
     local input_xml="$1" output_xml="$2" ovmf_bin="$3" qgs_socket="$4"
-    python3 - "$input_xml" "$output_xml" "$ovmf_bin" "$qgs_socket" <<'PYEOF'
-import sys, xml.etree.ElementTree as ET
-
-input_xml, output_xml, ovmf_bin, qgs_socket = sys.argv[1:5]
-ET.register_namespace('', '')
-tree = ET.parse(input_xml)
-root = tree.getroot()
-
-# 1. <os>: remove firmware attr and <firmware> element
-os_el = root.find('os')
-if os_el is not None:
-    if 'firmware' in os_el.attrib:
-        del os_el.attrib['firmware']
-    for fw in os_el.findall('firmware'):
-        os_el.remove(fw)
-
-# 2. <loader>: replace pflash with stateless rom
-loader = os_el.find('loader') if os_el is not None else None
-if loader is not None:
-    for child in list(os_el):
-        if child.tag == 'loader':
-            os_el.remove(child)
-    new_loader = ET.Element('loader', {'type': 'rom', 'format': 'raw', 'stateless': 'yes'})
-    new_loader.text = ovmf_bin
-    os_el.insert(1, new_loader)
-
-# 3. Remove <nvram> from <os> (TDX OVMF is stateless, no NVRAM)
-if os_el is not None:
-    for nvram in os_el.findall('nvram'):
-        os_el.remove(nvram)
-
-# 4. Remove <memoryBacking>
-for mb in root.findall('memoryBacking'):
-    root.remove(mb)
-
-# 5. Remove <ioapic> from <features>
-features = root.find('features')
-if features is not None:
-    for ioapic in features.findall('ioapic'):
-        features.remove(ioapic)
-
-# 6. Add <launchSecurity> before <devices>
-devices = root.find('devices')
-ls = ET.Element('launchSecurity', {'type': 'tdx'})
-ET.SubElement(ls, 'policy').text = '0x10000000'
-ET.SubElement(ls, 'quoteGenerationService', {'path': qgs_socket})
-if devices is not None:
-    root.insert(list(root).index(devices), ls)
-else:
-    root.append(ls)
-
-# 7. Add <vsock> in <devices> (before <memballoon>)
-if devices is not None:
-    vsock = ET.Element('vsock', {'model': 'virtio'})
-    ET.SubElement(vsock, 'cid', {'auto': 'yes'})
-    memballoon = devices.find('memballoon')
-    if memballoon is not None:
-        devices.insert(list(devices).index(memballoon), vsock)
-    else:
-        devices.append(vsock)
-
-# 8. <pm>: force suspend-to-mem and suspend-to-disk disabled (TDX cannot hibernate)
-pm = root.find('pm')
-if pm is None:
-    pm = ET.Element('pm')
-    if devices is not None:
-        root.insert(list(root).index(devices), pm)
-    else:
-        root.append(pm)
-for tag in ('suspend-to-mem', 'suspend-to-disk'):
-    el = pm.find(tag)
-    if el is None:
-        el = ET.SubElement(pm, tag)
-    el.set('enabled', 'no')
-
-tree.write(output_xml, xml_declaration=True, encoding='unicode')
-PYEOF
+    python3 "${SCRIPT_DIR}/tools/patch_vm_xml.py" \
+        "$input_xml" "$output_xml" "$qgs_socket" --rom-loader "$ovmf_bin"
 }
 
 cmd_convert_tdx() {
