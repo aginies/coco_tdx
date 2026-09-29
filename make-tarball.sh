@@ -40,6 +40,7 @@ mkdir -p "${STAGING_TAR}"
 
 # Copy files into versioned staging directory
 cp -a "${SCRIPT_DIR}/README.md" "${SCRIPT_DIR}/LICENSE" \
+ "${SCRIPT_DIR}/CHANGELOG.md" \
  "${SCRIPT_DIR}/tdx-attest.sh" "${SCRIPT_DIR}/pccs-check.sh" \
  "${SCRIPT_DIR}/convert_doc.py" \
  "${STAGING_TAR}/"
