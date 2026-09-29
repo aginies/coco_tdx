@@ -437,6 +437,16 @@ sudo ./tdx-attest.sh setup-host
    official prebuilt binary).
    - *Why:* Step 8 uses `grpcurl` to communicate directly with the CoCo-AS gRPC service for quote appraisal.
 
+> **Testing — latest packages on top of SLES 16.1:**
+> To test with the newest DCAP/QGS builds instead of the SLES 16.1
+> repository versions, add the Virtualization:SGX OBS repository before
+> running `setup-host`:
+>
+> ```bash
+> zypper ar -cf https://download.opensuse.org/repositories/Virtualization:/SGX/16.1/ obs_SGX
+> zypper refresh
+> ```
+
 > **Tip — local PCCS / air-gapped environments:**
 > When using a local caching PCCS instead of Intel PCS:
 >
