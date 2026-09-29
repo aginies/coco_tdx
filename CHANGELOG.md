@@ -3,6 +3,34 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.1.1] - 2026-09-29
+
+### Changed
+- **Refactoring (no behavior change):** duplicated logic extracted into
+  shared helpers — `jwt_decode_payload`, `warn_rtmr3_extended`,
+  `b64url_encode`, `resolve_kbs_client_bin`, `qcnl_secure_cert`,
+  `resolve_pccs_check`, `platform_check_args`, QGS socket/qemu-group state
+  probes, and a shared interactive VM picker used by `detect_guest_ip`
+  and `convert-tdx`.
+- **Unified XML patching:** the ~80-line embedded Python from `convert-tdx`
+  now runs through `tools/patch_vm_xml.py --rom-loader` — one tested
+  implementation for both TDX XML paths (virt-install and convert-tdx).
+  Output is byte-identical to the previous behavior (golden-file verified).
+- Untracked generated `style.css` (produced by `convert_doc.py`; the
+  embedded copy remains the single source of truth) and added it to
+  `.gitignore`.
+
+### Fixed
+- `convert-tdx`: the "No VMs found" error is now reachable — previously
+  an empty VM list produced a confusing `VM '' not found` instead.
+- `convert-tdx` on an already-TDX VM is now idempotent instead of emitting
+  duplicate `launchSecurity`/`vsock` elements that made `virsh define`
+  fail and roll back.
+
+### Removed
+- `161_C1.xml` (unreferenced reference VM XML; `tdx-guest.xml` remains the
+  working reference for the generated-XML path).
+
 ## [1.1.0] - 2026-09-29
 
 ### Added
