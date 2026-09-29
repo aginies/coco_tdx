@@ -32,6 +32,38 @@ def parse_inline(text):
         return text
 
 
+def split_table_row(line):
+        """Split a markdown table row on unescaped pipes.
+
+        A backslash-escaped pipe (\\|) is a literal pipe inside the cell
+        (GFM table rule), so it must not start a new column. A naive
+        split("|") broke rows whose code spans contain '\\|'
+        (e.g. `dmesg \\| grep ...`).
+        """
+        s = line.strip()
+        parts = []
+        cur = []
+        i = 0
+        while i < len(s):
+                if s[i] == "\\" and i + 1 < len(s) and s[i + 1] == "|":
+                        cur.append("|")
+                        i += 2
+                elif s[i] == "|":
+                        parts.append("".join(cur).strip())
+                        cur = []
+                        i += 1
+                else:
+                        cur.append(s[i])
+                        i += 1
+        parts.append("".join(cur).strip())
+        # Drop the empty entries produced by the leading/trailing pipes.
+        if parts and parts[0] == "":
+                parts = parts[1:]
+        if parts and parts[-1] == "":
+                parts = parts[:-1]
+        return parts
+
+
 def convert_md_to_html(md_path, html_path):
         try:
                 with open(md_path, encoding="utf-8") as f:
@@ -403,8 +435,8 @@ def convert_md_to_html(md_path, html_path):
                 if line.strip().startswith("|"):
                         flush_paragraph()
                         flush_list()
-                        # Parse table line
-                        parts = [col.strip() for col in line.strip().split("|")[1:-1]]
+                        # Parse table line (escaped pipes stay inside the cell)
+                        parts = split_table_row(line)
                         # Check if it's separator
                         if parts and all(re.match(r"^:?-+:?$", p) for p in parts):
                                 # Separator line, ignore

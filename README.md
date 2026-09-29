@@ -41,7 +41,7 @@ sudo ./tdx-attest.sh show-vm-info              # get GUEST_IP
 
 # 3. Guest preparation + attestation
 sudo ./tdx-attest.sh setup-guest --guest-ip <GUEST_IP>
-sudo ./tdx-attest.sh attest      --guest-ip <GUEST_IP> --register-rv
+sudo ./tdx-attest.sh attest --guest-ip <GUEST_IP> --register-rv
 
 # 4. Secret delivery
 sudo ./tdx-attest.sh secret-set --file /tmp/my-secret --path default/test/secret
@@ -350,7 +350,7 @@ host-side configuration.
   just the failed one is safe.
 
 `all` stops at VM start: the manual guest OS install (Step 6) and everything
-after it (Steps 7–9) still has to be done by hand. **If you used `all`, skip
+after it (Steps 7–9) still have to be done by hand. **If you used `all`, skip
 straight to Step 6** — Steps 1–5 below are only for running things
 individually.
 
@@ -370,8 +370,8 @@ individually.
 sudo ./tdx-attest.sh check
 ```
 
-**What it does:** runs 13 read-only probes (or 14 with `--check-platform`). No changes, no root strictly
-required.
+**What it does:** runs 13 read-only probes (or 14 with `--check-platform`). No
+changes are made; root is not strictly required.
 
 **Why each probe exists:**
 
@@ -384,7 +384,7 @@ required.
 | virt-customize | `command -v virt-customize` | guestfs-tools does the offline SSH-key injection in `setup-vm`. WARN only — the rest of the flow still works without it. |
 | QEMU TDX object | `qemu-system-x86_64 -object help` | TDX is a QEMU *object* (`tdx-guest`), not a machine type — so we probe the object list, not `-machine help`. |
 | TDX OVMF firmware | scan `/usr/share/qemu/firmware/*.json` | A TDX-specific UEFI firmware must exist to boot the TD. |
-| TDX module | `dmesg \| grep 'TDX-Module initialized'` | |
+| TDX module | `dmesg \| grep 'TDX-Module initialized'` | Confirms the TDX module (SEAM firmware) initialized in the kernel. |
 | DCAP packages | `rpm -qa` | Quote-verification libraries. |
 | QGS service | `systemctl`, socket checks | Quote signing service (Step 3). |
 | Trustee services | `systemctl` ×3 | Attestation stack (grpc-as, kbs, rvps; Step 4). |
@@ -433,7 +433,8 @@ sudo ./tdx-attest.sh setup-host
 4. **Ensures libvirt is running** (enables `virtqemud.socket` etc. if needed).
    - *Why:* Step 5 needs it to create the VM.
 
-5. **Ensures `grpcurl` is available** (installs distro package or official prebuilt binary).
+5. **Ensures `grpcurl` is available** (installs the distro package or the
+   official prebuilt binary).
    - *Why:* Step 8 uses `grpcurl` to communicate directly with the CoCo-AS gRPC service for quote appraisal.
 
 > **Tip — local PCCS / air-gapped environments:**
@@ -501,8 +502,8 @@ network).
      reads `/etc/sgx_default_qcnl.conf`; others read the `/run` and `/etc/dcap`
      copies.
 
-6. **Creates `qgsd-setup.service`** (a oneshot that restores the QCNL config
-   at every boot) + a tmpfiles rule for `/run/dcap`.
+6. **Creates `qgsd-setup.service`** (an oneshot service that restores the QCNL
+   config at every boot) + a tmpfiles rule for `/run/dcap`.
    - *Why:* `/run` is tmpfs — it's wiped on reboot. Without this, QGS loses
      its PCCS config after every restart and quote generation breaks.
 
@@ -530,7 +531,7 @@ sudo ./tdx-attest.sh setup-trustee
 
 | Service | Role in one line |
 | --- | --- |
-| **CoCo-AS** (`grpc-as`) | The verifier: checks a quote's signature and measurements, returns an **EAR token** (a JWT containing the measured claims + an `allow` decision). |
+| **CoCo-AS** (`grpc-as`) | The verifier: checks a quote's signature and measurements, and returns an **EAR token** (a JWT containing the measured claims + an `allow` decision). |
 | **KBS** | The vault: stores secrets; releases one only to a client presenting a valid EAR token that passes the resource policy. |
 | **RVPS** | The reference list: holds the expected measurements (e.g. MRTD) CoCo-AS compares against. |
 
@@ -947,7 +948,7 @@ plus the `allow` decision; KBS verifies its signature and reads `allow`
 without re-doing the attestation. *(Full background: "Appendix — JWT & EAR
 tokens" at the end of this guide.)*
 
-The `attest` command decodes the EAR token (a JWT built on EAT, RFC 9711): extracts payload, formats claims, displays a structured verification report, and checks `ear.status` as well as the Intel PCS `tcb_status`.
+The `attest` command decodes the EAR token (a JWT built on EAT, RFC 9711): extracts the payload, formats the claims, displays a structured verification report, and checks `ear.status` as well as the Intel PCS `tcb_status`.
 
 **Expected output (Hardware quote verified, awaiting RVPS enrollment):**
 
@@ -985,8 +986,10 @@ Intel DCAP hardware verification AND Trustee appraisal passed!
 
 ### Enrolling reference values into RVPS
 
-The default appraisal policy of the Trustee 0.20 attestation-request format used
-by this script requires `mr_td`, `rtmr_1`, `rtmr_2`, and `xfam` to match approved reference values stored in the Reference Value Provider Service (RVPS). You can enroll the guest's measurements directly:
+The default Trustee 0.20 appraisal policy used by this script requires
+`mr_td`, `rtmr_1`, `rtmr_2`, and `xfam` to match approved reference values
+stored in the Reference Value Provider Service (RVPS). You can enroll the
+guest's measurements directly:
 
 ```bash
 # Enroll reference values and attest in one step:
@@ -1018,59 +1021,35 @@ configuration and runtime activity show up.
 
 ### Understanding `ear.status: warning` & the RTMR 2 mismatch
 
-You may see `ear.status: warning` instead of `affirming`. The cause chain:
-
-1. **EAR status = the worst of its component claims.** The AR4SI trust vector
-   reports `hardware`, `configuration`, and `executables` separately, and the
-   overall status is the worst of them. Here `hardware` and `configuration`
-   are fine, but `executables` is tier 33 (Warning), which drags the whole
-   status down.
-
-2. **`executables` requires RTMR 2 to match an enrolled reference value.**
-   The default Trustee policy scores `executables` by checking that
-   `rtmr_1` and `rtmr_2` match approved values in the RVPS.
-
-3. **But the quote tool changes RTMR 2 on every run.** `test_tdx_attest` —
-   the DCAP program this script uses to mint quotes — deliberately exercises
-   the extend path (its binary contains `tdx_att_extend` and "Successfully
-   extended rtmr[2]/[3]"). So every fresh quote carries a *different*
-   `rtmr_2`, and a value enrolled from an earlier quote can never match it.
-
-In short: the mismatch is inherent to the quote tool, not a guest or
+You may see `ear.status: warning` instead of `affirming`. The overall status
+is the worst of its component claims, and here `executables` is tier 33
+(Warning): the default Trustee policy requires `rtmr_1`/`rtmr_2` to match
+enrolled RVPS values, but `test_tdx_attest` extends RTMR 2 on every run, so
+every fresh quote carries a different `rtmr_2` that can never match the
+enrolled value. The mismatch is inherent to the quote tool, not a guest or
 configuration problem.
 
 **The fix — evaluate the same quote you just enrolled:**
 
-The key idea: if you enroll reference values from a quote and then evaluate
-*that same quote*, its `rtmr_2` matches by construction. With `--register-rv`,
-the script does exactly this — after enrolling, it re-evaluates the stored
-quote instead of minting a new one. (Implementation: `attest_evaluate_quote
-"<base64>"` evaluates a given quote with no guest round-trip;
-`attest_get_ear_token` stashes the fresh quote in `LAST_QUOTE_B64` before
-evaluating.)
+```bash
+sudo ./tdx-attest.sh attest --guest-ip <GUEST_IP> --register-rv
+```
 
-Result: `executables` drops to tier 4 (`APPROVED_BOOT`) and `ear.status`
-becomes **`affirming`**.
+`--register-rv` enrolls the guest's measurements, then re-evaluates the
+*same* stored quote instead of minting a new one — its `rtmr_2` matches by
+construction, `executables` drops to tier 4 (`APPROVED_BOOT`), and
+`ear.status` becomes **`affirming`**.
 
-**Known limitation:** plain `attest` mints a fresh quote, which extends RTMR 2
-again — so it still reports `warning`. Only `attest --register-rv` (enroll +
-re-evaluate the same quote) shows `affirming`. A *stable* `affirming` on plain
-`attest` would require using a quote generator that does **not** extend RTMRs
-(e.g. the `tdx-quote-gen` tool `setup-guest` installs, which only calls
-`tdx_att_get_quote`), so RTMR 2 stays pinned at boot.
+**Known limitation:** plain `attest` mints a fresh quote, which extends
+RTMR 2 again — it still reports `warning`. A stable `affirming` on plain
+`attest` would require a quote generator that does not extend RTMRs (e.g.
+the `tdx-quote-gen` tool `setup-guest` installs).
 
-**Side effect on in-guest `secret-get`:** because `test_tdx_attest` extends
-RTMR 3 as well, the in-guest kbs-client's CC event log (which only covers
-boot-time RTMR 3) no longer replays — Method A then fails with
-`Eventlog does not pass measurement replay ... Register [index = 3]`. The
-script detects this and tells you to reboot the guest (resets the RTMRs)
-or use `secret-get --mode host`, which sends no event log and keeps working
-without a reboot.
-
-**Alternative (same goal):** the in-guest `kbs-client` (Step 9) runs this
-exact flow automatically — quote → KBS → CoCo-AS → EAR token — as part of
-fetching a secret. The standalone `attest` command exists to verify the
-attestation path on its own, before involving secrets.
+**Side effect on in-guest `secret-get`:** `test_tdx_attest` extends RTMR 3 as
+well, so the boot-time CC event log no longer replays — Method A fails with
+`Eventlog does not pass measurement replay ... Register [index = 3]` until
+you reboot the guest (resets the RTMRs) or use `secret-get --mode host`
+(sends no event log).
 
 **If it fails:**
 
@@ -1099,7 +1078,7 @@ sudo ./tdx-attest.sh secret-set --file /tmp/my-secret --path default/test/secret
 - *Why:* the secret now lives in KBS. KBS will not hand it to anyone until a
   client (1) attests successfully and (2) passes the resource policy.
 
-### 9b. Fetch the secret from inside the TD — two methods
+### 9b. Fetch the secret — two methods
 
 **Method A (default): in-guest kbs-client**
 
@@ -1153,7 +1132,7 @@ sudo ./tdx-attest.sh verify
 ```
 
 Read-only deep audit. *Why it exists:* the setup steps write many config files
-and start many services; a single wrong endpoint or typo'd JSON fails
+and start many services; a single wrong endpoint or typo in the JSON fails
 attestation silently. `verify` cross-checks:
 
 - all config files exist and are valid JSON (`jq`/`python3`),
@@ -1179,8 +1158,8 @@ sudo ./tdx-attest.sh clean
 
 - Stops Trustee + QGS services, destroys and undefines the VM.
 - Pass `-f` / `--force` to skip the interactive confirmation prompt.
-- *Keeps deliberately:* configs, keys, policies, disk image (all listed in
-  the output) — so re-running setup is incremental, not from scratch.
+- *Deliberately keeps:* configs, keys, policies, and the disk image (all
+  listed in the output) — so re-running setup is incremental, not from scratch.
 - Remove the disk manually if truly done:
   `rm /var/lib/libvirt/images/tdx-guest.qcow2`
 
@@ -1360,7 +1339,7 @@ In this flow, the **EAR token** from CoCo-AS is a JWT whose payload contains:
 
 - the measured claims (MRTD, RTMR registers, TDX module info)
 - `allow: true/false` — the policy decision
-- issuer and expiry
+- the issuer and expiry
 
 **What is EAR?**
 EAR = **EAT Attestation Result**. It's a standard JWT format built on the IETF
@@ -1524,7 +1503,7 @@ sudo ./tdx-attest.sh <command> -d
 | API | Application Programming Interface | Interface for software components to communicate |
 | CLI | Command Line Interface | User command interface |
 | gRPC | gRPC (HTTP/2-based RPC) | RPC framework used by Trustee for inter-component communication |
-| REST | Representational State Transfer | HTTP-based API style used by Trustee Attestation Service |
+| REST | Representational State Transfer | HTTP-based API style used by the KBS and the registration APIs |
 | DNS | Domain Name System | Network service for resolving hostnames |
 | ISO | International Organization for Standardization | Standards body |
 | DMTF | Distributed Management Task Force | Standards body that defines SPDM |
