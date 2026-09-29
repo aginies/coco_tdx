@@ -915,36 +915,15 @@ cmd_convert_tdx() {
         # Auto-detect: list all VMs and prompt user to choose
         if command -v virsh >/dev/null 2>&1; then
             local vm_list
-            vm_list=$(virsh list --all --name 2>/dev/null)
-            local vm_count
-            vm_count=$(wc -l <<<"$vm_list")
-            if [[ "$vm_count" -gt 0 ]]; then
-                echo ""
-                echo "Available VMs:"
-                local i=1
-                while IFS= read -r vm; do
-                    [[ -z "$vm" ]] && continue
-                    echo "  ${i}) ${vm}"
-                    ((i++))
-                done <<<"$vm_list"
-                echo ""
-                if ((vm_count == 1)); then
-                    vm_name=$(echo "$vm_list" | head -1)
-                    log "Auto-detected single VM: ${vm_name}"
-                else
-                    if [[ ! -t 0 ]]; then
-                        die "Interactive selection requires a tty. Re-run with --convert-vm <NAME>."
-                    fi
-                    local choice
-                    read -r -p "Enter VM number to convert: " choice
-                    if [[ "$choice" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= vm_count)); then
-                        vm_name=$(echo "$vm_list" | sed -n "${choice}p")
-                    else
-                        die "Invalid selection. Re-run with --convert-vm <NAME>."
-                    fi
-                fi
-            else
+            vm_list=$(virsh list --all --name 2>/dev/null | grep -v '^$' || true)
+            if [[ -z "$vm_list" ]]; then
                 die "No VMs found on this system. Use --convert-vm <NAME> if the VM is on a different host."
+            fi
+            pick_vm_interactively "Available VMs:" "Enter VM number to convert: " \
+                "Re-run with --convert-vm <NAME>." "$vm_list" "$vm_list"
+            vm_name="$PICKED_VM_NAME"
+            if [[ "$(grep -c . <<<"$vm_list")" -eq 1 ]]; then
+                log "Auto-detected single VM: ${vm_name}"
             fi
         else
             die "--convert-vm NAME is required for convert-tdx (virsh not available for auto-detection). Usage: ${SCRIPT_NAME} convert-tdx --convert-vm <VM_NAME>"
@@ -1092,27 +1071,33 @@ qgs_preflight_checks() {
     fi
 
     # 2. QGS socket must exist and be a real socket (not a stale symlink)
-    if [[ -S "${QGS_SOCKET}" ]]; then
+    case $(qgs_socket_state) in
+    present)
         record "PASS" "QGS socket present: ${QGS_SOCKET}"
-    elif [[ -L "${QGS_SOCKET}" ]]; then
+        ;;
+    stale-symlink)
         record "FAIL" "QGS socket is a stale symlink: ${QGS_SOCKET}" \
             "Remove it and restart: rm ${QGS_SOCKET} && systemctl restart qgsd.service"
-    else
+        ;;
+    *)
         record "FAIL" "QGS socket missing: ${QGS_SOCKET}" \
             "Start QGS: systemctl start qgsd.service  (or sudo ${SCRIPT_NAME} setup-qgs)"
-    fi
+        ;;
+    esac
 
     # 3. qemu user must be in the qgsd group to connect to the socket
-    if id qgsd >/dev/null 2>&1 && id qemu >/dev/null 2>&1; then
-        if id -nG qemu 2>/dev/null | tr ' ' '\n' | grep -qx qgsd; then
-            record "PASS" "qemu user is in qgsd group (socket access OK)"
-        else
-            record "FAIL" "qemu user NOT in qgsd group (cannot reach QGS socket)" \
-                "Run: usermod -aG qgsd qemu  (or sudo ${SCRIPT_NAME} setup-qgs)"
-        fi
-    else
+    case $(qgs_qemu_group_state) in
+    in-group)
+        record "PASS" "qemu user is in qgsd group (socket access OK)"
+        ;;
+    not-in-group)
+        record "FAIL" "qemu user NOT in qgsd group (cannot reach QGS socket)" \
+            "Run: usermod -aG qgsd qemu  (or sudo ${SCRIPT_NAME} setup-qgs)"
+        ;;
+    users-missing)
         record "WARN" "qgsd or qemu user missing; skipping group check" ""
-    fi
+        ;;
+    esac
 
     # 4. QCNL config must exist (QGS reads /etc/sgx_default_qcnl.conf)
     if [[ -f "$QCNL_PKG_CONF" ]]; then

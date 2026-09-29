@@ -235,6 +235,31 @@ check_dcap_pkgs() {
     fi
 }
 
+# State of the QGS socket file: prints 'present', 'stale-symlink' or 'missing'.
+qgs_socket_state() {
+    if [[ -S "${QGS_SOCKET}" ]]; then
+        echo "present"
+    elif [[ -L "${QGS_SOCKET}" ]]; then
+        echo "stale-symlink"
+    else
+        echo "missing"
+    fi
+}
+
+# Whether the qemu user can reach the QGS socket: prints 'in-group',
+# 'not-in-group' or 'users-missing' (qgsd/qemu user not present).
+qgs_qemu_group_state() {
+    if id qgsd >/dev/null 2>&1 && id qemu >/dev/null 2>&1; then
+        if id -nG qemu | tr ' ' '\n' | grep -qx qgsd; then
+            echo "in-group"
+        else
+            echo "not-in-group"
+        fi
+    else
+        echo "users-missing"
+    fi
+}
+
 check_qgs() {
     if ! systemctl cat qgsd.service >/dev/null 2>&1; then
         record "WARN" "QGS service (qgsd.service) not installed" "$(distro_pkg_manager) in $(distro_pkgs qgs) (setup-qgs)"
@@ -261,23 +286,27 @@ check_qgs() {
     fi
 
     # Socket file must exist and be a real socket (not a stale symlink).
-    if [[ -S "${QGS_SOCKET}" ]]; then
+    case $(qgs_socket_state) in
+    present)
         record "PASS" "QGS socket present: ${QGS_SOCKET}"
-    elif [[ -L "${QGS_SOCKET}" ]]; then
+        ;;
+    stale-symlink)
         record "FAIL" "QGS socket is a stale symlink (points to missing file)" \
             "rm ${QGS_SOCKET} && systemctl restart qgsd.service"
-    else
+        ;;
+    *)
         record "FAIL" "QGS socket missing: ${QGS_SOCKET}" \
             "journalctl -u qgsd.service -n 30; check QGS is in socket mode"
-    fi
+        ;;
+    esac
 
     # QEMU user must be able to access the socket (qgsd:qgsd mode 640).
-    if id qgsd >/dev/null 2>&1 && id qemu >/dev/null 2>&1; then
-        if ! id -nG qemu | tr ' ' '\n' | grep -qx qgsd; then
-            record "FAIL" "qemu user not in qgsd group (cannot access QGS socket)" \
-                "usermod -aG qgsd qemu (then restart VMs)"
-        fi
-    fi
+    case $(qgs_qemu_group_state) in
+    not-in-group)
+        record "FAIL" "qemu user not in qgsd group (cannot access QGS socket)" \
+            "usermod -aG qgsd qemu (then restart VMs)"
+        ;;
+    esac
 
     # QCNL config at the path QGS actually reads.
     if [[ -f /etc/sgx_default_qcnl.conf ]]; then

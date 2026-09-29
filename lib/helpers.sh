@@ -380,6 +380,48 @@ ensure_virt_customize() {
 Install $(distro_pkgs virt_customize) manually ($(distro_pkg_manager)), then re-run."
 }
 
+# Auto-detect guest IP from running VMs if GUEST_IP is not set.
+# Lists running VMs with their IPs, auto-selects if only one, prompts otherwise.
+# Sets GUEST_IP on success; dies on failure.
+# Shared interactive VM picker (used by detect_guest_ip and cmd_convert_tdx).
+# Arguments: header, prompt, hint (appended to the no-tty / invalid-selection
+# die messages), display lines (newline-separated, one per VM) and VM names
+# (newline-separated, same order). Prints the numbered list and sets the
+# global PICKED_VM_NAME; auto-selects when there is exactly one VM.
+pick_vm_interactively() {
+    local header="$1" prompt="$2" hint="$3" lines="$4" names="$5"
+    local -a vm_names=() vm
+    while IFS= read -r vm; do
+        [[ -n "$vm" ]] && vm_names+=("$vm")
+    done <<<"$names"
+    local -a display=() line
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && display+=("$line")
+    done <<<"$lines"
+    local i=1
+    echo ""
+    echo "$header"
+    for line in "${display[@]}"; do
+        echo "  ${i}) ${line}"
+        ((i++))
+    done
+    echo ""
+    if ((${#vm_names[@]} == 1)); then
+        PICKED_VM_NAME="${vm_names[0]}"
+        return 0
+    fi
+    if [[ ! -t 0 ]]; then
+        die "Interactive selection requires a tty. ${hint}"
+    fi
+    local choice
+    read -r -p "$prompt" choice
+    if [[ "$choice" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#vm_names[@]})); then
+        PICKED_VM_NAME="${vm_names[choice - 1]}"
+    else
+        die "Invalid selection. ${hint}"
+    fi
+}
+
 detect_guest_ip() {
     [[ -n "$GUEST_IP" ]] && return 0
     if ! command -v virsh >/dev/null 2>&1; then
@@ -393,41 +435,31 @@ detect_guest_ip() {
         warn "No VM is running (virsh list is empty)"
         die "Start the guest VM first, or pass --guest-ip <IP>."
     fi
-    echo ""
-    echo "Running VMs:"
-    local i=1 vm ip
-    local -a vm_names=() vm_ips=()
+    local vm ip
+    local -a vm_names=() vm_ips=() display=()
     while IFS= read -r vm; do
         [[ -z "$vm" ]] && continue
         ip=$(virsh domifaddr "$vm" 2>/dev/null | awk '/ipv4/ {print $4}' | cut -d/ -f1 | head -1 || true)
         vm_names+=("$vm")
         vm_ips+=("${ip:-unknown}")
-        echo "  ${i}) ${vm}  [${ip:-no IP detected}]"
-        ((i++))
+        display+=("${vm}  [${ip:-no IP detected}]")
     done <<<"$running_vms"
-    echo ""
+    pick_vm_interactively "Running VMs:" "Enter VM number: " \
+        "Re-run with --guest-ip <IP>." \
+        "$(printf '%s\n' "${display[@]}")" "$(printf '%s\n' "${vm_names[@]}")"
+    local idx
+    for idx in "${!vm_names[@]}"; do
+        if [[ "${vm_names[$idx]}" == "$PICKED_VM_NAME" ]]; then
+            GUEST_IP="${vm_ips[$idx]}"
+            break
+        fi
+    done
     if ((${#vm_names[@]} == 1)); then
-        GUEST_IP="${vm_ips[0]}"
         log "Auto-detected guest: ${vm_names[0]} (IP: ${GUEST_IP})"
     else
-        if [[ ! -t 0 ]]; then
-            die "Interactive selection requires a tty. Re-run with --guest-ip <IP>."
-        fi
-        local choice
-        read -r -p "Enter VM number: " choice
-        if [[ "$choice" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#vm_names[@]})); then
-            local idx=$((choice - 1))
-            GUEST_IP="${vm_ips[$idx]}"
-            log "Selected guest: ${vm_names[$idx]} (IP: ${GUEST_IP})"
-        else
-            die "Invalid selection. Re-run with --guest-ip <IP>."
-        fi
+        log "Selected guest: ${vm_names[$idx]} (IP: ${GUEST_IP})"
     fi
     if [[ -z "$GUEST_IP" || "$GUEST_IP" == "unknown" ]]; then
         die "No IP detected for the selected VM. Check the guest (agent/ARP) or pass --guest-ip <IP>."
     fi
 }
-
-# Run the 6 QGS host-side pre-flight checks, recording PASS/FAIL/WARN into
-# CHECK_RESULTS. Caller must reset CHECK_RESULTS=() before calling and render
-# with print_results afterwards. Resolves GUEST_VM_NAME from GUEST_IP.
