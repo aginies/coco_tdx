@@ -447,6 +447,44 @@ sudo ./tdx-attest.sh setup-host
 > zypper refresh
 > ```
 
+> **Tip — deploying a local PCCS server (optional, before air-gapped use):**
+> The `suse-sgx-dcap-pccs` package provides the PCCS server. It listens on
+> HTTPS port **8081** and caches Intel PCS data locally. On first start it
+> fetches the PCK cert chain from Intel PCS (requires temporary internet).
+> After that, all collateral traffic is local.
+>
+> ```bash
+> # 1. Install the PCCS server package
+> zypper in -y suse-sgx-dcap-pccs
+>
+> # 2. Copy the upstream config template → default config
+> cp /usr/libexec/suse-sgx-dcap-pccs/config/upstream.json \
+>    /usr/libexec/suse-sgx-dcap-pccs/config/default.json
+>
+> # 3. The service depends on MariaDB — start it first
+> systemctl enable --now mariadb.service
+>
+> # 4. Start the PCCS service (unit is pccs.service, NOT pccs-server.service)
+> systemctl enable --now pccs.service
+>
+> # 5. Verify it is serving
+> curl -sk https://127.0.0.1:8081/tdx/certification/v4/tcb | head -5
+> ```
+>
+> **Config reference:**
+> - Service unit: `/usr/lib/systemd/system/pccs.service`
+> - Config template: `/usr/libexec/suse-sgx-dcap-pccs/config/upstream.json`
+> - Active config: `/usr/libexec/suse-sgx-dcap-pccs/config/default.json`
+> - SQLite cache: `/var/lib/pccs/pckcache.db`
+> - Self-signed cert: `/var/lib/pccs/file.crt` + `/var/lib/pccs/private.pem`
+> - Admin tool: `/usr/bin/pccsadmin.py` (get / put / refresh subcommands)
+>
+> **HTTPS vs HTTP:** The PCCS uses HTTPS by default (self-signed cert). When
+> configuring QCNL / CoCo-AS to point at it, either:
+> - Use `https://127.0.0.1:8081` and install the PCCS root CA into the system
+>   trust store (the script's `--pccs-ca` flag does this automatically), or
+> - Use `http://127.0.0.1:8081` (bypasses TLS — only for lab/testing).
+
 > **Tip — local PCCS / air-gapped environments:**
 > When using a local caching PCCS instead of Intel PCS:
 >

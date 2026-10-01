@@ -21,10 +21,15 @@ collateral_via_pcs() {
 # Method 2: use a local PCCS cache. First fetch the PCCS root CA from PCS (the
 # "initial CA") and add it to the system trust store, so the DCAP clients
 # (QCNL/QGS, CoCo-AS) can verify the PCCS's TLS certificate.
+# If --deploy-pccs is set, this function also installs and starts the PCCS
+# server (suse-sgx-dcap-pccs package, pccs.service).
 collateral_via_pccs() {
     [[ -n "$PCCS_URL" ]] || die "PCCS mode requires a PCCS endpoint (--pccs-url)"
     log "Collateral source: local PCCS (${PCCS_URL})"
     ensure_pccs_root_ca
+    if [[ "$DEPLOY_PCCS" == "yes" ]]; then
+        deploy_pccs_server
+    fi
 }
 
 # Fetch or install the PCCS root CA into the system trust store.
@@ -77,6 +82,75 @@ ensure_pccs_root_ca() {
         warn "Could not fetch PCCS root CA via ${PCS_URL%/}/pccs/${PCCS_ID}/pccsroot."
         warn "If your local PCCS uses self-signed HTTPS, supply its CA certificate using --pccs-ca <file> or use --insecure."
     fi
+}
+
+# Deploy and start the local PCCS server (suse-sgx-dcap-pccs package).
+# The unit is pccs.service (NOT pccs-server.service). It depends on MariaDB.
+# The PCCS listens on HTTPS port 8081 by default; the config lives at
+# /usr/libexec/suse-sgx-dcap-pccs/config/default.json (copied from
+# upstream.json template). On first start it fetches the PCK chain from
+# Intel PCS — requires temporary internet access.
+deploy_pccs_server() {
+    # Check if already running
+    if systemctl is-active --quiet pccs.service 2>/dev/null; then
+        log "PCCS server (pccs.service) is already running"
+        return 0
+    fi
+
+    # Check if the package is installed
+    if ! rpm -q suse-sgx-dcap-pccs >/dev/null 2>&1; then
+        log "Installing suse-sgx-dcap-pccs package..."
+        zypper in -y suse-sgx-dcap-pccs || die "Failed to install suse-sgx-dcap-pccs"
+    fi
+
+    # Ensure MariaDB is running (PCCS depends on it)
+    if ! systemctl is-active --quiet mariadb.service 2>/dev/null; then
+        log "Starting MariaDB (PCCS dependency)..."
+        systemctl enable --now mariadb.service || warn "MariaDB failed to start; PCCS may not work"
+    fi
+
+    # Copy upstream config template → default config if not present
+    if [[ ! -f /usr/libexec/suse-sgx-dcap-pccs/config/default.json ]]; then
+        log "Copying PCCS config template: upstream.json → default.json"
+        cp /usr/libexec/suse-sgx-dcap-pccs/config/upstream.json \
+           /usr/libexec/suse-sgx-dcap-pccs/config/default.json
+    fi
+
+    # Start the PCCS service
+    log "Starting PCCS server (pccs.service) on port 8081..."
+    systemctl enable --now pccs.service || die "Failed to start pccs.service"
+
+    # Verify it is serving
+    sleep 3
+    if curl -sk --max-time 10 https://127.0.0.1:8081/tdx/certification/v4/tcb >/dev/null 2>&1; then
+        log "PCCS server is up and serving collateral"
+    else
+        warn "PCCS service started but did not respond to HTTP probe within 3s."
+        warn "Check: journalctl -u pccs.service"
+    fi
+
+    # If PCCS uses HTTPS (default), install its root CA into the trust store
+    # so that QCNL/CoCo-AS can verify the self-signed cert.
+    if [[ "$PCCS_URL" =~ ^http:// ]]; then
+        log "PCCS URL is plain HTTP (${PCCS_URL}); skipping root CA installation"
+        return 0
+    fi
+
+    # The PCCS generates a self-signed cert at /var/lib/pccs/file.crt.
+    # Install it as the PCCS root CA so DCAP clients trust it.
+    local pccs_cert="/var/lib/pccs/file.crt"
+    if [[ -s "$pccs_cert" ]]; then
+        log "Installing PCCS self-signed root CA into system trust store..."
+        mkdir -p "$(dirname "$PCCS_ROOT_CA")"
+        cp "$pccs_cert" "$PCCS_ROOT_CA"
+        chmod 644 "$PCCS_ROOT_CA"
+        distro_ca_trust_refresh || warn "Trust store refresh failed; trust the CA manually: ${PCCS_ROOT_CA}"
+        log "PCCS root CA installed and trusted: ${PCCS_ROOT_CA}"
+    else
+        warn "PCCS cert not found at ${pccs_cert}; QCNL/CoCo-AS may need --insecure"
+    fi
+
+    log "PCCS deployment complete: service=pccs.service, port=8081, config=/usr/libexec/suse-sgx-dcap-pccs/config/default.json"
 }
 
 # Select the collateral source (method 1 = PCS, method 2 = PCCS) and prepare

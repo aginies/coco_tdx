@@ -243,6 +243,7 @@ Options:
     --pccs-url URL         Local PCCS endpoint (default: ${PCCS_URL})
     --pccs-ca PATH         Local PCCS root CA certificate file (HTTPS)
     --pccs-id ID           PCCS identifier (optional)
+    --deploy-pccs          Install and start the local PCCS server (suse-sgx-dcap-pccs)
     --insecure             Disable TLS certificate verification in QCNL config
   Attestation:
     --coco-as HOST:PORT    CoCo-AS endpoint (default: ${COCO_AS})
@@ -275,6 +276,7 @@ Options:
 
 Advanced examples:
   sudo ${SCRIPT_NAME} all --collateral pccs --pccs-url http://10.0.0.5:8081 --pccs-id 1234
+  sudo ${SCRIPT_NAME} all --collateral pccs --pccs-url http://127.0.0.1:8081 --deploy-pccs
   sudo ${SCRIPT_NAME} convert-tdx --convert-vm nontdx-guest
   sudo ${SCRIPT_NAME} secret-get --guest-ip <GUEST_IP> --path ${SECRET_PATH} --mode host
   sudo ${SCRIPT_NAME} attest --guest-ip <GUEST_IP> --register-rv
@@ -347,6 +349,9 @@ parse_args() {
             req_val "$1" "${2:-}"
             PCCS_ID="$2"
             shift
+            ;;
+        --deploy-pccs)
+            DEPLOY_PCCS="yes"
             ;;
         --insecure | --no-secure-cert)
             USE_SECURE_CERT="false"

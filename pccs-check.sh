@@ -538,6 +538,7 @@ try_find_pccs_db() {
     local db_paths=(
         "/opt/intel/sgx-dcap-pccs/pccs_server.db"
         "/var/lib/pccs/pccs_server.db"
+        "/var/lib/pccs/pckcache.db"
         "/var/cache/pccs/pccs.db"
     )
     for db in "${db_paths[@]}"; do
@@ -677,7 +678,7 @@ require_fmspc() {
         echo "  1. Cached PCK certs: /var/lib/sgx/*.cert, /var/cache/pccs/*.cert, /run/dcap/*.cert"
         echo "  2. CSV retrieval cache: /tmp/pckid_retrieval.csv, ./pckid.csv"
         echo "  3. Intel PCKIDRetrievalTool hardware probe"
-        echo "  4. Local PCCS cache database: /opt/intel/sgx-dcap-pccs/pccs_server.db"
+        echo "  4. Local PCCS cache database: /var/lib/pccs/pckcache.db (SUSE suse-sgx-dcap-pccs)"
         local vendor cpu_desc
         vendor=$(grep -m1 '^vendor_id' /proc/cpuinfo 2>/dev/null | awk '{print $3}' || echo "unknown")
         cpu_desc=$(grep -m1 '^model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2- | sed -e 's/^[ \t]*//' || echo "")
