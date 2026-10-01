@@ -1419,12 +1419,24 @@ cmd_qcnl() {
             if [[ -n "$test_url" ]]; then
                 # The QCNL pccs_url is a BASE url; the PCS v4 API lives under
                 # /sgx/certification/v4/ (or /tdx/...). Probe a real endpoint,
-                # not a bare path.
+                # not a bare path. Try both API trees — a PCCS may serve only
+                # one of them.
                 local probe_base="${test_url%/}"
-                [[ "$probe_base" == *"/certification/v4"* ]] || probe_base="${probe_base}/sgx/certification/v4"
-                local qve_url="${probe_base}/qe/identity"
-                local qve_code
-                qve_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$qve_url" 2>/dev/null || echo "000")
+                local probe_urls
+                if [[ "$probe_base" == *"/certification/v4"* ]]; then
+                    probe_urls=("${probe_base}/qe/identity")
+                else
+                    probe_urls=("${probe_base}/tdx/certification/v4/qe/identity"
+                                "${probe_base}/sgx/certification/v4/qe/identity")
+                fi
+                local qve_url qve_code
+                qve_code="000"
+                for qve_url in "${probe_urls[@]}"; do
+                    qve_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$qve_url" 2>/dev/null || echo "000")
+                    if [[ "$qve_code" == "200" ]]; then
+                        break
+                    fi
+                done
                 if [[ "$qve_code" == "200" ]]; then
                     log_info "Reachability (${qve_url}): HTTP 200 OK"
                 else
@@ -1475,6 +1487,8 @@ cmd_qcnl() {
 cmd_local_pccs() {
     log_section "Local PCCS Deployment Audit"
     local exit_code=0
+    # NOTE: these paths mirror the PCCS_SERVER_* constants in lib/constants.sh
+    # (this script is standalone and does not source lib/). Keep them in sync.
     local ca_pem="/var/lib/pccs/pccs-ca.pem"
     local leaf_crt="/var/lib/pccs/file.crt"
     local port=8081
@@ -1538,35 +1552,45 @@ cmd_local_pccs() {
     if [[ -f "$ca_pem" ]]; then
         local cn
         cn=$(openssl x509 -in "$ca_pem" -noout -subject -nameopt sep_multiline 2>/dev/null | sed -n 's/^ *CN *= *//p' | head -1)
-        # p11-kit store — read by rustls (CoCo-AS)
+        # p11-kit store — read by rustls (CoCo-AS). Content-based check:
+        # export the anchored certs and verify this exact CA against them
+        # (a label/CN match alone would not catch a stale anchor from a
+        # regenerated CA with the same CN).
         if command -v trust >/dev/null 2>&1; then
-            local trust_out
-            trust_out=$(trust list 2>/dev/null || true)
-            # Capture first: `trust list | grep -q` is unreliable under pipefail.
-            if grep -q "label: ${cn}" <<<"$trust_out"; then
-                log_info "p11-kit store: CA anchored (label: ${cn})"
+            local anchors=""
+            if anchors=$(mktemp 2>/dev/null) \
+               && trust extract --format=pem-bundle --overwrite "$anchors" 2>/dev/null \
+               && openssl verify -CAfile "$anchors" "$ca_pem" >/dev/null 2>&1; then
+                log_info "p11-kit store: CA anchored (verified by content)"
             else
-                log_error "p11-kit store: CA NOT anchored — CoCo-AS (rustls) will reject the chain"
-                log_error "Fix: trust anchor $ca_pem && systemctl restart grpc-as"
-                exit_code=1
+                # Fallback for p11-kit builds without pem-bundle export.
+                local trust_out
+                trust_out=$(trust list 2>/dev/null || true)
+                # Capture first: `trust list | grep -q` is unreliable under pipefail.
+                if grep -q "label: ${cn}" <<<"$trust_out"; then
+                    log_info "p11-kit store: CA anchored (label: ${cn})"
+                else
+                    log_error "p11-kit store: CA NOT anchored — CoCo-AS (rustls) will reject the chain"
+                    log_error "Fix: trust anchor $ca_pem && systemctl restart grpc-as"
+                    exit_code=1
+                fi
+            fi
+            if [[ -n "$anchors" ]]; then
+                rm -f "$anchors"
             fi
         else
             log_warn "p11-kit 'trust' tool not found; cannot check the p11-kit store"
         fi
-        # OpenSSL bundle — read by curl / QCNL / DCAP C clients
-        local bundle="/etc/pki/tls/certs/ca-bundle.crt"
-        if [[ -f "$bundle" ]]; then
-            local marker
-            marker=$(awk '/BEGIN CERT/{f=1;next}/END CERT/{f=0}f' "$ca_pem" | head -1)
-            if grep -qF "$marker" "$bundle"; then
-                log_info "OpenSSL bundle: CA present ($bundle)"
-            else
-                log_error "OpenSSL bundle: CA missing — curl/QCNL will reject the chain"
-                log_error "Fix: cat $ca_pem >> $bundle"
-                exit_code=1
-            fi
+        # OpenSSL store — read by curl / QCNL / DCAP C clients. Check the
+        # effective DEFAULT store (distro-agnostic: /etc/ssl/certs on SLES
+        # 16.1, /etc/pki/tls/certs on SLES 15). A self-signed CA that is in
+        # the store verifies against itself.
+        if openssl verify "$ca_pem" >/dev/null 2>&1; then
+            log_info "OpenSSL store: CA present in the default trust store"
         else
-            log_warn "OpenSSL bundle not found: $bundle"
+            log_error "OpenSSL store: CA missing — curl/QCNL will reject the chain"
+            log_error "Fix: trust anchor $ca_pem, then update-ca-certificates (SLES 16.1) or update-ca-trust (SLES 15)"
+            exit_code=1
         fi
     fi
 
@@ -1577,7 +1601,7 @@ cmd_local_pccs() {
             log_info "TLS handshake verified against local CA: code 0 (ok)"
         else
             log_error "TLS handshake verification FAILED:"
-            grep -E "Verify return code|verify error" <<<"$out" | head -3
+            grep -E "Verify return code|verify error" <<<"$out" | head -3 || true
             exit_code=1
         fi
     else
@@ -1590,7 +1614,7 @@ cmd_local_pccs() {
     local code
     code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$url" 2>/dev/null || echo "000")
     if [[ "$code" == "200" ]]; then
-        log_info "TDX QE identity endpoint: HTTP 200 (TLS verified by curl — CA is in the OpenSSL bundle)"
+        log_info "TDX QE identity endpoint: HTTP 200 (TLS verified by curl — CA is in the OpenSSL store)"
     else
         log_error "TDX QE identity endpoint: HTTP ${code}"
         [[ "$code" == "000" ]] && log_error "curl could not complete the request — TLS not trusted? (see section 4)"

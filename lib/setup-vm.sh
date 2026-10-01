@@ -1272,10 +1272,21 @@ cat > /run/dcap/qcnl.conf <<'QCNL'
 QCNL
 chmod 640 /run/dcap/qcnl.conf
 EOF
-    if [[ "$COLLATERAL_MODE" == "pccs" && -s "$PCCS_ROOT_CA" ]]; then
-        log "Shipping PCCS root CA to guest and trusting it"
+    # The CA location depends on how the PCCS was set up: --pccs-ca / --pccs-id
+    # install it at $PCCS_ROOT_CA, while --deploy-pccs generates it at
+    # $PCCS_SERVER_CA. Ship whichever exists.
+    local guest_ca=""
+    if [[ "$COLLATERAL_MODE" == "pccs" ]]; then
+        if [[ -s "$PCCS_ROOT_CA" ]]; then
+            guest_ca="$PCCS_ROOT_CA"
+        elif [[ -s "$PCCS_SERVER_CA" ]]; then
+            guest_ca="$PCCS_SERVER_CA"
+        fi
+    fi
+    if [[ -n "$guest_ca" ]]; then
+        log "Shipping PCCS root CA to guest and trusting it: ${guest_ca}"
         ssh_guest "$(guest_distro_ca_trust_cmd)" \
-            <"$PCCS_ROOT_CA" || die "Failed to install PCCS root CA in guest"
+            <"$guest_ca" || die "Failed to install PCCS root CA in guest"
     fi
     log "QCNL config written in guest"
 

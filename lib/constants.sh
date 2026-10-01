@@ -54,7 +54,7 @@ PCS_URL="${PCS_URL:-https://api.trustedservices.intel.com/sgx/certification/v4/}
 # The SLES suse-sgx-dcap-pccs package serves HTTPS only, on 127.0.0.1:8081
 # (see /usr/libexec/suse-sgx-dcap-pccs/config). This is the base URL: QCNL and
 # CoCo-AS append the /sgx|tdx/certification/v4/ API paths themselves.
-PCCS_URL="https://127.0.0.1:8081"
+PCCS_URL="${PCCS_URL:-https://127.0.0.1:8081}"
 # Paths used by --deploy-pccs (SLES suse-sgx-dcap-pccs package layout):
 # the server reads its leaf cert/key from the HTTPS_file_crt / HTTPS_private_pem
 # config keys, which point at /var/lib/pccs/file.crt + private.pem.

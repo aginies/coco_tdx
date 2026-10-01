@@ -478,8 +478,10 @@ sudo ./tdx-attest.sh setup-host
 > 3. The CA **anchored in the p11-kit system trust store** — this is what
 >    rustls/CoCo-AS actually reads (`trust anchor /var/lib/pccs/pccs-ca.pem`
 >    on SUSE, object lands in `/etc/pki/trust/`),
-> 4. The CA **also in the OpenSSL CA bundle** (`/etc/pki/tls/certs/ca-bundle.crt`)
->    for curl, QCNL and the DCAP C libraries,
+> 4. The CA **in the OpenSSL store** for curl, QCNL and the DCAP C
+>    libraries — on SLES 16.1 that store (`/etc/ssl/certs`) is *generated
+>    from the p11-kit store* by `update-ca-certificates`, so step 3 plus a
+>    trust refresh covers it (on SLES 15: `update-ca-trust`),
 > 5. **`grpc-as` restarted after anchoring** — rustls loads the native trust
 >    store at process start, so an anchor added later is invisible until the
 >    service restarts.
@@ -504,8 +506,8 @@ sudo ./tdx-attest.sh setup-host
 > - Log: `/var/lib/pccs/logs/pccs_server.log`
 >
 > **Existing PCCS (not deployed by the script):** pass its root CA with
-> `--pccs-ca /path/to/pccs-ca.pem` — the script anchors it in both trust
-> stores (p11-kit + OpenSSL bundle). Note: `use_secure_cert: false` in the
+> `--pccs-ca /path/to/pccs-ca.pem` — the script anchors it in the p11-kit
+> store and refreshes the OpenSSL store. Note: `use_secure_cert: false` in the
 > CoCo-AS config does **not** disable outbound PCCS TLS verification — the
 > CA must be anchored either way.
 >
@@ -531,9 +533,11 @@ sudo ./tdx-attest.sh setup-host
 >     -CAkey /var/lib/pccs/pccs-ca.key -CAcreateserial -days 3650 -sha256 \
 >     -extfile /tmp/pccs-ext.cnf -out /var/lib/pccs/file.crt
 > chown pccs:pccs /var/lib/pccs/file.crt && chmod 644 /var/lib/pccs/file.crt
-> # 3. Anchor in p11-kit (rustls/CoCo-AS) + OpenSSL bundle (curl/QCNL)
+> # 3. Anchor in p11-kit (rustls/CoCo-AS), then regenerate the OpenSSL
+> #    store (curl/QCNL/DCAP) from it:
 > trust anchor /var/lib/pccs/pccs-ca.pem
-> cat /var/lib/pccs/pccs-ca.pem >> /etc/pki/tls/certs/ca-bundle.crt
+> update-ca-certificates   # SLES 16.1 (Debian-style ca-certificates)
+> #    SLES 15: run update-ca-trust instead
 > # 4. Restart both services (order matters: pccs first, then grpc-as)
 > systemctl restart pccs.service
 > systemctl restart grpc-as.service
@@ -1384,7 +1388,9 @@ If your PCCS is deployed outside of this script and uses a private root CA,
 the CA must be trusted by **both** consumers before attestation works:
 
 - the **p11-kit system trust store** — read by CoCo-AS (rustls);
-- the **OpenSSL CA bundle** — read by curl, QCNL and the DCAP C libraries.
+- the **OpenSSL store** — read by curl, QCNL and the DCAP C libraries
+  (on SLES 16.1 it is generated from the p11-kit store by
+  `update-ca-certificates`).
 
 `--pccs-ca` handles both (and is idempotent):
 
@@ -1396,8 +1402,11 @@ sudo ./tdx-attest.sh setup-host \
 ```
 
 After anchoring a new CA, **restart `grpc-as`** — rustls loads the native
-trust store at process start. Then verify with `./pccs-check.sh local-pccs`
-(or `openssl s_client -connect <host>:8081 -CAfile <ca.pem>`).
+trust store at process start. Then verify with
+`openssl s_client -connect <host>:8081 -CAfile <ca.pem>` (expect
+`Verify return code: 0 (ok)`). `./pccs-check.sh local-pccs` does the same
+plus more, but only for a PCCS on the **same host** (it audits the local
+`/var/lib/pccs` deployment).
 
 > **Note:** setting `use_secure_cert: false` in the CoCo-AS config does
 > **not** disable outbound PCCS TLS verification — the CA must be anchored
@@ -1411,7 +1420,7 @@ trust store at process start. Then verify with `./pccs-check.sh local-pccs`
 | CoCo-AS log: `rustls_platform_verifier … UnknownIssuer` | PCCS server cert is not signed by a CA anchored in the p11-kit store (e.g. self-signed leaf, or anchor added after `grpc-as` started) | `./pccs-check.sh local-pccs` pinpoints the broken link; re-run `setup-host --collateral pccs --pccs-url https://127.0.0.1:8081 --deploy-pccs`, then restart `grpc-as` |
 | CoCo-AS log: `CaUsedAsEndEntity` | The PCCS cert is a CA cert (CA:TRUE) used as the end-entity | Re-issue the leaf with `CA:FALSE` + SAN (`--deploy-pccs` does this) |
 | `qgs` logs: "No certificate data for this platform" | PCCS cache empty for this FMSPC, or platform not registered | Warm the cache while online (`pccs-check.sh tcb --tdx --pccs-url …`); run `register-platform` while online |
-| `curl https://<PCCS_HOST>:8081/…` fails with a TLS error | PCCS not running, wrong port, or CA missing from the OpenSSL bundle | `systemctl status pccs.service` (default port 8081); `./pccs-check.sh local-pccs` section 4 |
+| `curl https://<PCCS_HOST>:8081/…` fails with a TLS error | PCCS not running, wrong port, or CA missing from the OpenSSL store (`update-ca-certificates` / `update-ca-trust` not run after `trust anchor`) | `systemctl status pccs.service` (default port 8081); `./pccs-check.sh local-pccs` section 4 |
 | TCB status shows "OutOfDate" | PCCS cache is stale | Temporarily restore internet and let the daily refresh (or a service restart) re-sync |
 | `check-platform` returns 404 | Platform not registered with Intel | Must register while online (see above) |
 | QGS fails with `0xe011` | PCCS unreachable or misconfigured QCNL | Verify `cat /run/dcap/qcnl.conf` points at PCCS |

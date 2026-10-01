@@ -110,6 +110,9 @@ ensure_ca_trusted() {
 
     # 1. p11-kit system trust store (CoCo-AS / rustls).
     #    On SUSE, `trust anchor` writes a .p11-kit object into /etc/pki/trust/.
+    #    On SLES 16.1 this store is ALSO the source the OpenSSL store is
+    #    generated from (update-ca-certificates -> trust extract), so a single
+    #    anchor covers both consumers once the refresh below has run.
     if command -v trust >/dev/null 2>&1; then
         local trust_out
         trust_out=$(trust list 2>/dev/null || true)
@@ -119,27 +122,40 @@ ensure_ca_trusted() {
             log "Root CA already anchored in p11-kit store (label: ${cn})"
         else
             log "Anchoring root CA into p11-kit store (trust anchor) ..."
-            run trust anchor "$ca_file" \
-                || warn "trust anchor failed — CoCo-AS may reject the PCCS TLS chain"
         fi
+        # Always (re)anchor: `trust anchor` is idempotent for the same cert, and
+        # a label (CN) match alone cannot detect a regenerated CA that reuses
+        # the same CN (e.g. after the CA key was lost) — that would leave a
+        # stale anchor while the leaf chains to the new CA.
+        run trust anchor "$ca_file" \
+            || warn "trust anchor failed — CoCo-AS may reject the PCCS TLS chain"
     else
         warn "p11-kit 'trust' tool not found; cannot anchor CA for rustls/CoCo-AS"
     fi
 
-    # 2. Distro anchor directory + refresh (update-ca-trust-based distros;
-    #    SLES 16.1 ships p11-kit-tools only, where the refresh is a no-op).
+    # 2. Distro anchor directory (SLES 15's update-ca-trust reads it;
+    #    harmless elsewhere).
     local anchor_dir="/etc/pki/ca-trust/source/anchors"
     if [[ -d "$anchor_dir" ]]; then
         local name
         name=$(echo "$cn" | tr ' ' '_' | tr '[:upper:]' '[:lower:]')
         install -m 0644 "$ca_file" "${anchor_dir}/${name}.pem"
-        distro_ca_trust_refresh || warn "trust store refresh failed (continuing)"
     fi
 
-    # 3. OpenSSL CA bundle (curl, QCNL, DCAP C clients). No tool regenerates
-    #    this file on SLES 16.1, so append the certificate directly.
+    # 3. Refresh the OpenSSL store (curl, QCNL, DCAP C clients):
+    #    SLES 15: update-ca-trust regenerates /etc/pki/tls/certs/ca-bundle.crt
+    #    from the anchor dir; SLES 16.1: update-ca-certificates regenerates
+    #    /etc/ssl/certs from the p11-kit store. (A ca-certificates.path unit
+    #    also does this asynchronously on 16.1; the explicit run avoids
+    #    racing the first TLS connection against the regeneration.)
+    distro_ca_trust_refresh || warn "trust store refresh failed (continuing)"
+
+    # 4. Last resort (no refresh tool at all): append to the legacy SUSE
+    #    bundle directly.
     local bundle="/etc/pki/tls/certs/ca-bundle.crt"
-    if [[ -f "$bundle" ]]; then
+    if ! command -v update-ca-trust >/dev/null 2>&1 \
+       && ! command -v update-ca-certificates >/dev/null 2>&1 \
+       && [[ -f "$bundle" ]]; then
         local marker
         marker=$(awk '/BEGIN CERT/{f=1;next}/END CERT/{f=0}f' "$ca_file" | head -1)
         if grep -qF "$marker" "$bundle"; then
@@ -148,6 +164,14 @@ ensure_ca_trusted() {
             log "Appending root CA to OpenSSL bundle ($bundle) ..."
             cat "$ca_file" >> "$bundle"
         fi
+    fi
+
+    # 5. Verify the CA is in the effective OpenSSL default store now
+    #    (distro-agnostic: /etc/ssl/certs on SLES 16.1, /etc/pki/tls/certs
+    #    on SLES 15). A self-signed CA that is in the store verifies
+    #    against itself.
+    if ! openssl verify "$ca_file" >/dev/null 2>&1; then
+        warn "CA is not in the effective OpenSSL default store — curl/QCNL may reject the PCCS TLS chain (run the distro trust refresh manually)"
     fi
 }
 
@@ -200,6 +224,10 @@ EOF
     fi
 
     chown -R pccs:pccs "$PCCS_SERVER_DIR" 2>/dev/null || true
+    # The CA key must stay unreadable by the pccs service account: a
+    # compromised PCCS process must not be able to mint new certs for the
+    # local CA. (Re-chowning also repairs deployments from older versions.)
+    chown root:root "$PCCS_SERVER_CA_KEY" 2>/dev/null || true
     chmod 600 "$PCCS_SERVER_CA_KEY" "$PCCS_SERVER_KEY"
     chmod 644 "$PCCS_SERVER_CA" "$PCCS_SERVER_CERT"
 }
@@ -225,8 +253,9 @@ verify_pccs_tls() {
         return 0
     fi
     error "PCCS TLS verification FAILED — CoCo-AS will reject the chain:"
-    grep -E "Verify return code|verify error" <<<"$out" | head -3
-    error "Fix: re-run with --deploy-pccs (regenerates CA + leaf and re-anchors)."
+    grep -E "Verify return code|verify error" <<<"$out" | head -3 || true
+    error "Check that ${PCCS_CONFIG_FILE} points HTTPS_file_crt/HTTPS_private_pem at ${PCCS_SERVER_CERT}/${PCCS_SERVER_KEY}, and inspect the PCCS log"
+    error "Fix: the leaf ${PCCS_SERVER_CERT} must chain to a CA anchored in the trust stores — regenerate with --deploy-pccs (or pass --pccs-ca for an existing deployment), then restart pccs + grpc-as"
     return 1
 }
 

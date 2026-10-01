@@ -39,25 +39,32 @@ sles_pkg_installed() { rpm -q "$1" >/dev/null 2>&1; }
 sles_pkg_install() { run zypper in -y "$@"; }
 sles_pkg_list_all() { rpm -qa 2>/dev/null || true; }
 
-# SLE refreshes the system trust store with update-ca-trust (note: the
-# Debian-style update-ca-certificates does not exist on SLE).
-# SLES 15/16: update-ca-trust (when present) regenerates the OpenSSL bundle
-# from /etc/pki/ca-trust/source/anchors/. SLES 16.1 ships only p11-kit-tools
-# (the 'trust' command); there the p11-kit DB IS the system store and the
-# OpenSSL bundle is maintained by direct append (see ensure_ca_trusted), so
-# the refresh is a no-op rather than a failure.
+# SLE refreshes the system trust store. Two generations of tooling:
+# - SLES 15: update-ca-trust regenerates /etc/pki/tls/certs/ca-bundle.crt
+#   from /etc/pki/ca-trust/source/anchors/.
+# - SLES 16.1: Debian-style ca-certificates; update-ca-certificates
+#   regenerates /etc/ssl/certs (hashed) + /var/lib/ca-certificates/
+#   from the p11-kit store (`trust extract --filter=ca-anchors`). A
+#   ca-certificates.path unit also triggers this asynchronously when
+#   /etc/pki/trust changes; running it explicitly avoids the race.
 sles_ca_trust_refresh() {
     if command -v update-ca-trust >/dev/null 2>&1; then
         run update-ca-trust
+    elif command -v update-ca-certificates >/dev/null 2>&1; then
+        run update-ca-certificates
     else
-        log "update-ca-trust not present (p11-kit-tools only); p11-kit DB is the system store"
+        log "no trust store refresh tool found; p11-kit DB is the system store"
         return 0
     fi
 }
 
-# Remote command that reads a CA certificate from stdin, installs it into the
-# SLE trust anchors and refreshes the trust store (guest-side).
-sles_ca_trust_cmd="sudo mkdir -p /etc/pki/ca-trust/source/anchors && sudo install -m 0644 /dev/stdin /etc/pki/ca-trust/source/anchors/pccs-root-ca.pem && (sudo update-ca-trust || true)"
+# Remote command that reads a CA certificate from stdin and installs it into
+# every guest trust store: the anchor dir (SLES 15), the p11-kit DB
+# (`trust anchor` — read by rustls, and the source the SLES 16.1 OpenSSL
+# store is generated from), then refreshes the OpenSSL store for curl/DCAP
+# (update-ca-trust on SLES 15, update-ca-certificates on SLES 16.1, direct
+# append to the legacy bundle as a last resort).
+sles_ca_trust_cmd="A=/etc/pki/ca-trust/source/anchors/pccs-root-ca.pem; sudo mkdir -p \$(dirname \"\$A\") && sudo install -m 0644 /dev/stdin \"\$A\" && (sudo trust anchor \"\$A\" 2>/dev/null || true) && if command -v update-ca-trust >/dev/null 2>&1; then sudo update-ca-trust; elif command -v update-ca-certificates >/dev/null 2>&1; then sudo update-ca-certificates; else f=\$(awk '/BEGIN CERT/{f=1;next}/END CERT/{f=0}f' \"\$A\" | head -1); grep -qF \"\$f\" /etc/pki/tls/certs/ca-bundle.crt 2>/dev/null || sudo tee -a /etc/pki/tls/certs/ca-bundle.crt < \"\$A\" >/dev/null; fi"
 
 sles_grub_tdx_hint() {
     echo "Mandatory: add 'kvm_intel.tdx' to the kernel command line (GRUB_CMDLINE_LINUX), regenerate GRUB config, reboot"
