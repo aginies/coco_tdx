@@ -3,6 +3,63 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.2.0] - 2026-10-01
+
+### Added
+- **`setup-host --deploy-pccs`:** one-command local PCCS server deployment —
+  installs `suse-sgx-dcap-pccs`, generates a proper root CA + server leaf
+  chain (the package's self-signed leaf is rejected by rustls), anchors the
+  CA in the system trust stores, restarts `pccs`/`grpc-as`, and finishes
+  with a live `openssl s_client` verification. Idempotent and repairing.
+- **`pccs-check.sh local-pccs`:** one-shot audit of a local PCCS deployment
+  (service, leaf details, CA chain, both trust stores — content-based,
+  live TLS handshake, collateral endpoint).
+- Guest-side PCCS CA install now anchors in the guest p11-kit store and
+  refreshes the guest OpenSSL store (works on SLES 15 and 16.1 guests).
+
+### Changed
+- `PCCS_URL` default is now `https://127.0.0.1:8081` (the PCCS serves
+  HTTPS only) and is environment-overridable, like `PCS_URL`.
+- SLES trust-store model corrected: on SLES 16.1 the p11-kit store is the
+  source of truth and `update-ca-certificates` regenerates the OpenSSL
+  store from it — the previous assumption (SUSE-style `update-ca-trust`,
+  direct append to `/etc/pki/tls/certs/ca-bundle.crt`) was wrong for 16.1.
+- `probe_collateral_url` now probes real PCS v4 endpoints
+  (`/tdx|sgx/certification/v4/qe/identity`); the old probe paths 404 on a
+  PCCS base URL.
+
+### Fixed
+- Root cause of `UnknownIssuer` with a local PCCS: the shipped
+  self-signed leaf is not a valid end-entity cert for
+  `rustls-platform-verifier`; `--deploy-pccs` builds a CA + leaf chain
+  (`CA:FALSE`, SAN `DNS:127.0.0.1,IP:127.0.0.1`, `serverAuth`) instead.
+- `ensure_ca_trusted` now always re-anchors (`trust anchor` is
+  idempotent); the old label-based skip could leave a stale anchor after
+  a CA regeneration with the same CN.
+- The PCCS CA private key is no longer readable by the `pccs` service
+  account (re-chowned to `root:root 600` after the `chown -R`).
+- `pccs-check.sh qcnl` reachability probe used the real
+  `/sgx/certification/v4/qe/identity` endpoint (the old bare path 404'd)
+  and now tries both the `/tdx/` and `/sgx/` API trees.
+- `setup-vm` ships the PCCS CA to the guest on the `--deploy-pccs` path
+  too (previously only with `--pccs-ca`, so the recommended path left the
+  guest without a CA).
+- `setup-guest` fails loudly when `gcc` cannot be installed in the guest
+  instead of continuing with a broken toolchain.
+- `pccs-check.sh local-pccs` p11-kit check is content-based (`trust
+  extract --format=pem-bundle --overwrite` + `openssl verify`), catching
+  stale same-CN anchors; `--overwrite` is required because `trust
+  extract` refuses to write an existing file.
+
+### Docs
+- README: local PCCS deployment section — why a bare install is not
+  enough, the manual equivalent of `--deploy-pccs`, config reference,
+  air-gapped caveats (LAZY fill + daily refresh reach upstream), and a
+  troubleshooting table for `UnknownIssuer` / `CaUsedAsEndEntity` /
+  stale-cache symptoms.
+- README: note on the Virtualization:SGX OBS repository for testing
+  latest DCAP/QGS packages on top of SLES 16.1.
+
 ## [1.1.1] - 2026-09-29
 
 ### Changed
