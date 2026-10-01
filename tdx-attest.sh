@@ -36,8 +36,9 @@
 #
 # Collateral source (--collateral):
 #   pcs    (default) fetch PCK collateral directly from the global Intel PCS
-#   pccs   fetch it from a local PCCS cache; the PCCS root CA is first
-#          obtained from PCS (--pccs-id required, endpoint via --pccs-url)
+#   pccs   fetch it from a local PCCS cache; for a local deployment use
+#          --deploy-pccs (generates CA + leaf, anchors the CA, verifies TLS);
+#          for an existing PCCS pass its root CA via --pccs-ca
 #
 # Usage: tdx-attest.sh <command> [options]
 #        tdx-attest.sh -h | --help
@@ -243,7 +244,9 @@ Options:
     --pccs-url URL         Local PCCS endpoint (default: ${PCCS_URL})
     --pccs-ca PATH         Local PCCS root CA certificate file (HTTPS)
     --pccs-id ID           PCCS identifier (optional)
-    --deploy-pccs          Install and start the local PCCS server (suse-sgx-dcap-pccs)
+    --deploy-pccs          Deploy/repair the local PCCS server (suse-sgx-dcap-pccs):
+                           CA + leaf cert chain, trust anchors (p11-kit + OpenSSL),
+                           service start, TLS verification
     --insecure             Disable TLS certificate verification in QCNL config
   Attestation:
     --coco-as HOST:PORT    CoCo-AS endpoint (default: ${COCO_AS})
@@ -275,8 +278,8 @@ Options:
                            RTMR[3] was extended at runtime)
 
 Advanced examples:
-  sudo ${SCRIPT_NAME} all --collateral pccs --pccs-url http://10.0.0.5:8081 --pccs-id 1234
-  sudo ${SCRIPT_NAME} all --collateral pccs --pccs-url http://127.0.0.1:8081 --deploy-pccs
+  sudo ${SCRIPT_NAME} all --collateral pccs --pccs-url https://10.0.0.5:8081 --pccs-ca /path/to/pccs-ca.pem
+  sudo ${SCRIPT_NAME} all --collateral pccs --pccs-url https://127.0.0.1:8081 --deploy-pccs
   sudo ${SCRIPT_NAME} convert-tdx --convert-vm nontdx-guest
   sudo ${SCRIPT_NAME} secret-get --guest-ip <GUEST_IP> --path ${SECRET_PATH} --mode host
   sudo ${SCRIPT_NAME} attest --guest-ip <GUEST_IP> --register-rv

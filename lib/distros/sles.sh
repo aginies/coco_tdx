@@ -41,7 +41,19 @@ sles_pkg_list_all() { rpm -qa 2>/dev/null || true; }
 
 # SLE refreshes the system trust store with update-ca-trust (note: the
 # Debian-style update-ca-certificates does not exist on SLE).
-sles_ca_trust_refresh() { run update-ca-trust; }
+# SLES 15/16: update-ca-trust (when present) regenerates the OpenSSL bundle
+# from /etc/pki/ca-trust/source/anchors/. SLES 16.1 ships only p11-kit-tools
+# (the 'trust' command); there the p11-kit DB IS the system store and the
+# OpenSSL bundle is maintained by direct append (see ensure_ca_trusted), so
+# the refresh is a no-op rather than a failure.
+sles_ca_trust_refresh() {
+    if command -v update-ca-trust >/dev/null 2>&1; then
+        run update-ca-trust
+    else
+        log "update-ca-trust not present (p11-kit-tools only); p11-kit DB is the system store"
+        return 0
+    fi
+}
 
 # Remote command that reads a CA certificate from stdin, installs it into the
 # SLE trust anchors and refreshes the trust store (guest-side).

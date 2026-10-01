@@ -449,50 +449,107 @@ sudo ./tdx-attest.sh setup-host
 
 > **Tip — deploying a local PCCS server (optional, before air-gapped use):**
 > The `suse-sgx-dcap-pccs` package provides the PCCS server. It listens on
-> HTTPS port **8081** and caches Intel PCS data locally. On first start it
-> fetches the PCK cert chain from Intel PCS (requires temporary internet).
-> After that, all collateral traffic is local.
+> HTTPS port **8081** (loopback only) and caches Intel PCS data locally in a
+> SQLite DB. With the default `CachingFillMode: LAZY` it fetches *missing*
+> collateral from Intel PCS on first request (plus a daily refresh at 01:00)
+> — so warm the cache while the host still has internet, then all collateral
+> traffic stays local.
+>
+> **One command does it all:**
 >
 > ```bash
-> # 1. Install the PCCS server package
-> zypper in -y suse-sgx-dcap-pccs
+> sudo ./tdx-attest.sh setup-host --collateral pccs \
+>     --pccs-url https://127.0.0.1:8081 --deploy-pccs
+> ```
 >
-> # 2. Copy the upstream config template → default config
-> cp /usr/libexec/suse-sgx-dcap-pccs/config/upstream.json \
->    /usr/libexec/suse-sgx-dcap-pccs/config/default.json
+> **Why `--deploy-pccs` is needed (and why a bare install is not enough):**
+> The package ships a *self-signed* server certificate. That is not usable
+> as-is: CoCo-AS verifies the PCCS TLS chain with rustls
+> (`rustls-platform-verifier`), which rejects self-signed end-entity certs
+> and any chain whose issuer is not a trusted anchor (log error:
+> `UnknownIssuer`). A working deployment needs:
 >
-> # 3. The service depends on MariaDB — start it first
-> systemctl enable --now mariadb.service
+> 1. A **root CA** (`/var/lib/pccs/pccs-ca.pem`, `CA:TRUE`; the private key
+>    is kept at `/var/lib/pccs/pccs-ca.key` for re-signing later),
+> 2. A **server leaf** (`/var/lib/pccs/file.crt`, `CA:FALSE`,
+>    `SAN: DNS:127.0.0.1,IP:127.0.0.1`, `serverAuth`) signed by that CA —
+>    the PCCS reads it from the `HTTPS_file_crt`/`HTTPS_private_pem` config
+>    keys,
+> 3. The CA **anchored in the p11-kit system trust store** — this is what
+>    rustls/CoCo-AS actually reads (`trust anchor /var/lib/pccs/pccs-ca.pem`
+>    on SUSE, object lands in `/etc/pki/trust/`),
+> 4. The CA **also in the OpenSSL CA bundle** (`/etc/pki/tls/certs/ca-bundle.crt`)
+>    for curl, QCNL and the DCAP C libraries,
+> 5. **`grpc-as` restarted after anchoring** — rustls loads the native trust
+>    store at process start, so an anchor added later is invisible until the
+>    service restarts.
 >
-> # 4. Start the PCCS service (unit is pccs.service, NOT pccs-server.service)
-> systemctl enable --now pccs.service
+> `--deploy-pccs` performs all five steps and finishes with a live
+> `openssl s_client` verification (`Verify return code: 0 (ok)`). It is
+> idempotent and *repairing*: re-running it on a broken deployment (e.g. a
+> self-signed leaf) regenerates the leaf and re-anchors. Audit any
+> deployment at any time with:
 >
-> # 5. Verify it is serving
-> curl -sk https://127.0.0.1:8081/tdx/certification/v4/tcb | head -5
+> ```bash
+> ./pccs-check.sh local-pccs
 > ```
 >
 > **Config reference:**
-> - Service unit: `/usr/lib/systemd/system/pccs.service`
+> - Service unit: `pccs.service` (NOT `pccs-server.service`)
 > - Config template: `/usr/libexec/suse-sgx-dcap-pccs/config/upstream.json`
 > - Active config: `/usr/libexec/suse-sgx-dcap-pccs/config/default.json`
 > - SQLite cache: `/var/lib/pccs/pckcache.db`
-> - Self-signed cert: `/var/lib/pccs/file.crt` + `/var/lib/pccs/private.pem`
-> - Admin tool: `/usr/bin/pccsadmin.py` (get / put / refresh subcommands)
+> - Server leaf/key: `/var/lib/pccs/file.crt` + `/var/lib/pccs/private.pem`
+> - Local CA: `/var/lib/pccs/pccs-ca.pem` (+ key `pccs-ca.key`)
+> - Log: `/var/lib/pccs/logs/pccs_server.log`
 >
-> **HTTPS vs HTTP:** The PCCS uses HTTPS by default (self-signed cert). When
-> configuring QCNL / CoCo-AS to point at it, either:
-> - Use `https://127.0.0.1:8081` and install the PCCS root CA into the system
->   trust store (the script's `--pccs-ca` flag does this automatically), or
-> - Use `http://127.0.0.1:8081` (bypasses TLS — only for lab/testing).
+> **Existing PCCS (not deployed by the script):** pass its root CA with
+> `--pccs-ca /path/to/pccs-ca.pem` — the script anchors it in both trust
+> stores (p11-kit + OpenSSL bundle). Note: `use_secure_cert: false` in the
+> CoCo-AS config does **not** disable outbound PCCS TLS verification — the
+> CA must be anchored either way.
+>
+> **Manual deployment (equivalent of --deploy-pccs):**
+>
+> ```bash
+> zypper in -y suse-sgx-dcap-pccs
+> cp /usr/libexec/suse-sgx-dcap-pccs/config/upstream.json \
+>    /usr/libexec/suse-sgx-dcap-pccs/config/default.json
+> systemctl enable --now mariadb.service      # soft dependency
+> # 1. Root CA (keep the key!)
+> openssl genrsa -out /var/lib/pccs/pccs-ca.key 2048
+> openssl req -x509 -new -key /var/lib/pccs/pccs-ca.key -sha256 -days 3650 \
+>     -subj "/C=US/O=coco_tdx/CN=Local PCCS Root CA" \
+>     -addext "basicConstraints=critical,CA:TRUE" \
+>     -addext "keyUsage=critical,keyCertSign,cRLSign" \
+>     -out /var/lib/pccs/pccs-ca.pem
+> # 2. Server leaf signed by that CA (reuse /var/lib/pccs/private.pem)
+> openssl req -new -key /var/lib/pccs/private.pem -subj "/CN=127.0.0.1" \
+>     -out /tmp/pccs.csr
+> printf 'subjectAltName=DNS:127.0.0.1,IP:127.0.0.1\nbasicConstraints=CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n' > /tmp/pccs-ext.cnf
+> openssl x509 -req -in /tmp/pccs.csr -CA /var/lib/pccs/pccs-ca.pem \
+>     -CAkey /var/lib/pccs/pccs-ca.key -CAcreateserial -days 3650 -sha256 \
+>     -extfile /tmp/pccs-ext.cnf -out /var/lib/pccs/file.crt
+> chown pccs:pccs /var/lib/pccs/file.crt && chmod 644 /var/lib/pccs/file.crt
+> # 3. Anchor in p11-kit (rustls/CoCo-AS) + OpenSSL bundle (curl/QCNL)
+> trust anchor /var/lib/pccs/pccs-ca.pem
+> cat /var/lib/pccs/pccs-ca.pem >> /etc/pki/tls/certs/ca-bundle.crt
+> # 4. Restart both services (order matters: pccs first, then grpc-as)
+> systemctl restart pccs.service
+> systemctl restart grpc-as.service
+> # 5. Verify
+> echo | openssl s_client -connect 127.0.0.1:8081 -CAfile /var/lib/pccs/pccs-ca.pem 2>/dev/null | grep "Verify return code"
+> #    -> "Verify return code: 0 (ok)"
+> ```
 
 > **Tip — local PCCS / air-gapped environments:**
 > When using a local caching PCCS instead of Intel PCS:
 >
 > ```bash
-> sudo ./tdx-attest.sh setup-host --collateral pccs --pccs-url http://<PCCS_HOST>:8081
+> sudo ./tdx-attest.sh setup-host --collateral pccs --pccs-url https://<PCCS_HOST>:8081 --pccs-ca /path/to/pccs-ca.pem
 > ```
 >
-> For custom or self-signed HTTPS PCCS deployments, pass `--pccs-ca /path/to/pccs-root-ca.pem` (or `--insecure` to bypass TLS verification).
+> For a PCCS deployed by this script, `--pccs-url https://127.0.0.1:8081 --deploy-pccs` (see above).
 
 **Verify:**
 
@@ -1252,41 +1309,40 @@ it reads from the local cache instead.
 
 ### Step-by-step: initial sync (while you still have internet)
 
-#### 1. Install PCCS
+#### 1. Deploy the PCCS server
 
 ```bash
-# From the SLES SGX repo (or download the PCCS package manually)
-sudo zypper install suse-libsgx-dcap-default-qpl
-# PCCS is typically provided as a separate package or tarball
-# Install Node.js if not present:
-sudo zypper install nodejs
+# One command: installs suse-sgx-dcap-pccs, generates the CA + leaf
+# certificate chain, anchors the CA in the trust stores, starts the
+# service and verifies the TLS chain:
+sudo ./tdx-attest.sh setup-host --collateral pccs \
+    --pccs-url https://127.0.0.1:8081 --deploy-pccs
 ```
 
-#### 2. Start PCCS and sync with Intel PCS
+(For a PCCS that already exists elsewhere, skip this and pass its root CA
+with `--pccs-ca /path/to/pccs-ca.pem` instead — see the Step 2 tip.)
+
+#### 2. Warm the PCCS cache
+
+The packaged PCCS uses `CachingFillMode: LAZY`: it fetches collateral from
+Intel PCS **on first request**, then serves it from the local SQLite cache
+(`/var/lib/pccs/pckcache.db`). A daily refresh (`RefreshSchedule`, default
+01:00) keeps it current while online. Warm the cache by running the
+platform checks against the PCCS:
 
 ```bash
-# Start PCCS (default port: 8081)
-sudo systemctl start pccs
-# or if using a tarball installation:
-node /opt/intel/pccs/server/app.js --config /opt/intel/pccs/config.json
+# TCB status via the local PCCS (not Intel PCS):
+./pccs-check.sh tcb --tdx --pccs-url https://127.0.0.1:8081
 
-# Verify it's running:
-curl -sI http://localhost:8081/
-# Should return HTTP 200
+# PCK certificate availability:
+./pccs-check.sh pckcert --auto --tdx --pccs-url https://127.0.0.1:8081
+
+# Full audit: service, cert chain, trust stores, TLS handshake:
+./pccs-check.sh local-pccs
 ```
 
-PCCS will automatically sync with Intel PCS in the background. Wait for the
-sync to complete (check PCCS logs for "sync completed" messages).
-
-#### 3. Verify PCCS has collateral
-
-```bash
-# Check TCB status via PCCS (not Intel PCS):
-sudo ./pccs-check.sh tcb --tdx --pccs-url http://localhost:8081
-
-# Check PCK certificate availability:
-sudo ./pccs-check.sh pckcert --auto --tdx --pccs-url http://localhost:8081
-```
+Verify in the PCCS log that the upstream fetches happened and the data was
+cached: `grep -E "trustedservices|INSERT" /var/lib/pccs/logs/pccs_server.log`.
 
 #### 4. Register your platform (if needed)
 
@@ -1303,11 +1359,11 @@ sudo ./tdx-attest.sh register-platform --subscription "YOUR_PRIMARY_KEY"
 
 ```bash
 # All host setup commands now use --collateral pccs:
-sudo ./tdx-attest.sh check --check-platform --collateral pccs --pccs-url http://<PCCS_HOST>:8081
-sudo ./tdx-attest.sh setup-host --collateral pccs --pccs-url http://<PCCS_HOST>:8081
-sudo ./tdx-attest.sh setup-qgs --collateral pccs --pccs-url http://<PCCS_HOST>:8081
-sudo ./tdx-attest.sh setup-trustee --collateral pccs --pccs-url http://<PCCS_HOST>:8081
-sudo ./tdx-attest.sh setup-vm --guest-iso /path/to/SLE-16.1.iso --collateral pccs --pccs-url http://<PCCS_HOST>:8081
+sudo ./tdx-attest.sh check --check-platform --collateral pccs --pccs-url https://<PCCS_HOST>:8081
+sudo ./tdx-attest.sh setup-host --collateral pccs --pccs-url https://<PCCS_HOST>:8081
+sudo ./tdx-attest.sh setup-qgs --collateral pccs --pccs-url https://<PCCS_HOST>:8081
+sudo ./tdx-attest.sh setup-trustee --collateral pccs --pccs-url https://<PCCS_HOST>:8081
+sudo ./tdx-attest.sh setup-vm --guest-iso /path/to/SLE-16.1.iso --collateral pccs --pccs-url https://<PCCS_HOST>:8081
 ```
 
 > **Note:** The `--collateral pccs --pccs-url` flags are propagated to
@@ -1322,49 +1378,65 @@ Steps 6–11 (guest OS install, guest setup, attestation, secret delivery,
 verify, cleanup) are **identical** to the online flow. The only difference
 is that quote verification reads collateral from PCCS instead of Intel PCS.
 
-### Self-signed / private CA for PCCS
+### Private CA for an existing PCCS
 
-If your PCCS uses a self-signed or private root CA:
+If your PCCS is deployed outside of this script and uses a private root CA,
+the CA must be trusted by **both** consumers before attestation works:
+
+- the **p11-kit system trust store** — read by CoCo-AS (rustls);
+- the **OpenSSL CA bundle** — read by curl, QCNL and the DCAP C libraries.
+
+`--pccs-ca` handles both (and is idempotent):
 
 ```bash
-# Point setup-host at the CA certificate:
 sudo ./tdx-attest.sh setup-host \
   --collateral pccs \
   --pccs-url https://<PCCS_HOST>:8081 \
-  --pccs-ca /path/to/pccs-root-ca.pem
-
-# Or bypass TLS verification (lab use only):
-sudo ./tdx-attest.sh setup-host \
-  --collateral pccs \
-  --pccs-url https://<PCCS_HOST>:8081 \
-  --insecure
+  --pccs-ca /path/to/pccs-ca.pem
 ```
+
+After anchoring a new CA, **restart `grpc-as`** — rustls loads the native
+trust store at process start. Then verify with `./pccs-check.sh local-pccs`
+(or `openssl s_client -connect <host>:8081 -CAfile <ca.pem>`).
+
+> **Note:** setting `use_secure_cert: false` in the CoCo-AS config does
+> **not** disable outbound PCCS TLS verification — the CA must be anchored
+> either way. `--insecure` only affects the QCNL config (QGS-side), not
+> CoCo-AS.
 
 ### Troubleshooting air-gapped setups
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| `qgs` logs: "No certificate data for this platform" | PCCS hasn't synced yet, or platform not registered | Wait for PCCS sync; run `register-platform` while online |
-| `curl http://<PCCS_HOST>:8081/` fails | PCCS not running or wrong port | `systemctl status pccs`; default port is 8081 |
-| TCB status shows "OutOfDate" | PCCS cache is stale | Re-sync PCCS with Intel PCS (requires temporary internet) |
+| CoCo-AS log: `rustls_platform_verifier … UnknownIssuer` | PCCS server cert is not signed by a CA anchored in the p11-kit store (e.g. self-signed leaf, or anchor added after `grpc-as` started) | `./pccs-check.sh local-pccs` pinpoints the broken link; re-run `setup-host --collateral pccs --pccs-url https://127.0.0.1:8081 --deploy-pccs`, then restart `grpc-as` |
+| CoCo-AS log: `CaUsedAsEndEntity` | The PCCS cert is a CA cert (CA:TRUE) used as the end-entity | Re-issue the leaf with `CA:FALSE` + SAN (`--deploy-pccs` does this) |
+| `qgs` logs: "No certificate data for this platform" | PCCS cache empty for this FMSPC, or platform not registered | Warm the cache while online (`pccs-check.sh tcb --tdx --pccs-url …`); run `register-platform` while online |
+| `curl https://<PCCS_HOST>:8081/…` fails with a TLS error | PCCS not running, wrong port, or CA missing from the OpenSSL bundle | `systemctl status pccs.service` (default port 8081); `./pccs-check.sh local-pccs` section 4 |
+| TCB status shows "OutOfDate" | PCCS cache is stale | Temporarily restore internet and let the daily refresh (or a service restart) re-sync |
 | `check-platform` returns 404 | Platform not registered with Intel | Must register while online (see above) |
 | QGS fails with `0xe011` | PCCS unreachable or misconfigured QCNL | Verify `cat /run/dcap/qcnl.conf` points at PCCS |
 
 ### PCCS maintenance (after initial sync)
 
-PCCS caches are **not automatically updated** in air-gapped mode. To refresh:
+The PCCS refreshes its cache automatically **while it can reach the
+upstream** (Intel PCS): lazy fill on first request plus the daily
+`RefreshSchedule` (default `0 0 1 * * *`, i.e. 01:00). In air-gapped mode
+the cache is frozen at the last sync — TCB levels and CRLs go stale over
+time, which eventually shows up as `OutOfDate` TCB status.
 
-```bash
-# Temporarily restore internet, sync, then disconnect again:
-sudo pccs-sync --url https://api.trustedservices.intel.com/tdx/certification/v4/tcb
+To refresh an air-gapped PCCS:
 
-# Or manually download updated collateral and import into PCCS:
-# (see Intel PCCS documentation for the import procedure)
-```
+1. Temporarily restore internet access,
+2. Restart the service (triggers a re-sync of the cached entries):
+   `sudo systemctl restart pccs.service`,
+3. Verify the new data in the log (`grep trustedservices
+   /var/lib/pccs/logs/pccs_server.log`) and the cache
+   (`sqlite3 /var/lib/pccs/pckcache.db 'SELECT COUNT(*) FROM fmspc_tcbs;'`),
+4. Disconnect again.
 
-> **Recommendation:** Set up a periodic sync schedule (e.g., weekly cron job
-> on a host that has intermittent internet access) to keep PCCS collateral
-> up-to-date with the latest TCB levels and CVE advisories.
+To change the refresh cadence while online, edit `RefreshSchedule` in
+`/usr/libexec/suse-sgx-dcap-pccs/config/default.json` (cron syntax) and
+restart `pccs.service`.
 
 ---
 
@@ -1427,7 +1499,7 @@ was verified" — that's why the script can use it as a bearer token in Step 9.
 | `trustee.service` reports `inactive` / condition failed | The monolithic `trustee.service` is intentionally disabled in favor of individual modular units | Expected behavior. Verify the active modular services: `systemctl is-active grpc-as kbs rvps qgsd` |
 | Guest kbs-client missing or lacks TDX attester | `trustee` package too old (< 0.21) | Install/upgrade the `trustee` package from the SGX repo, then re-run `sudo ./tdx-attest.sh setup-guest --guest-ip <GUEST_IP>` |
 | Guest can't reach KBS (secret-get times out) | Host firewall blocks 8080, wrong guest IP, or libvirt NAT issue | From the guest: `curl -sI http://<HOST_IP>:8080` — check the host firewall (`sudo firewall-cmd --list-ports`) and re-fetch the IP with `virsh net-dhcp-leases default` |
-| Local PCCS reports TLS certificate errors | Self-signed or private root CA not trusted | Pass `--pccs-ca /path/to/pccs-ca.pem` to `setup-host` or supply `--insecure` |
+| CoCo-AS log: `rustls_platform_verifier … UnknownIssuer` / local PCCS reports TLS certificate errors | PCCS server cert is self-signed (not signed by an anchored CA), the CA is missing from the p11-kit store, or `grpc-as` started before the CA was anchored | Run `./pccs-check.sh local-pccs` (audits service, cert chain, both trust stores, live TLS); fix with `sudo ./tdx-attest.sh setup-host --collateral pccs --pccs-url https://127.0.0.1:8081 --deploy-pccs`, then `systemctl restart grpc-as`. For an existing PCCS: pass its root CA via `--pccs-ca` |
 | `grpcurl: command not found` | Auto-installed grpcurl not in PATH | The script installs it to `/usr/local/bin` (root) or `~/.local/bin` — check `echo $PATH`, or re-run `attest` as root so it lands in `/usr/local/bin` |
 | Quotes work, then break after host reboot | `/run/dcap/qcnl.conf` wiped (tmpfs) | `systemctl status qgsd-setup.service` — it should restore it |
 

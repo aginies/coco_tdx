@@ -88,7 +88,6 @@ CRL_ENCODING="pem"
 VERBOSE=0
 SUBSCRIPTION_KEY=""
 ENCLAVE_TYPE="qe"
-AUTO_DETECT=0
 AUTO_DETECT_SOURCE=""
 
 # Colors
@@ -137,6 +136,7 @@ Commands:
   collateral       Fetch full collateral (TCB info + PCK cert chain)
   check            Quick platform validity check (TCB + CRL + PCK cert)
   qcnl             Validate local QCNL config, permissions, and collateral endpoints
+  local-pccs       Audit a locally deployed PCCS: service, cert chain, trust stores, TLS
   register         Register platform manifest with Intel SGX Registration Service
 
 Options:
@@ -229,7 +229,7 @@ parse_args() {
     while (($# > 0)); do
         case "$1" in
         --auto)
-            AUTO_DETECT=1
+            # Kept for compatibility: auto-detection runs unconditionally.
             shift
             ;;
         --fmspc)
@@ -412,8 +412,8 @@ parse_pckid_csv() {
         if [[ "$line" =~ ^[Ee]ncryptedPPID || "$line" =~ ^PCE_ID || "$line" =~ ^PLATFORM ]]; then
             continue
         fi
-        local csv_ppid csv_pceid csv_cpusvn csv_pcesvn csv_qeid csv_manifest csv_fmspc
-        IFS=',' read -r csv_ppid csv_pceid csv_cpusvn csv_pcesvn csv_qeid csv_manifest csv_fmspc <<<"$line"
+        local csv_ppid csv_pceid csv_cpusvn csv_pcesvn _csv_qeid csv_manifest csv_fmspc
+        IFS=',' read -r csv_ppid csv_pceid csv_cpusvn csv_pcesvn _csv_qeid csv_manifest csv_fmspc <<<"$line"
         # Trim whitespace or trailing CR
         csv_ppid=$(echo "${csv_ppid:-}" | tr -d '[:space:]')
         csv_pceid=$(echo "${csv_pceid:-}" | tr -d '[:space:]')
@@ -561,13 +561,12 @@ try_find_pccs_db() {
 # Try inspecting /proc/cpuinfo on Intel hosts to determine processor family/model
 try_detect_cpu_fmspc() {
     [[ -r /proc/cpuinfo ]] || return 1
-    local vendor model family stepping model_name
+    local vendor model stepping model_name
     vendor=$(grep -m1 '^vendor_id' /proc/cpuinfo | awk '{print $3}' || true)
     if [[ "$vendor" != "GenuineIntel" ]]; then
         return 1
     fi
 
-    family=$(grep -m1 '^cpu family' /proc/cpuinfo | awk '{print $4}' || true)
     model=$(grep -m1 '^model\s*:' /proc/cpuinfo | awk '{print $3}' || true)
     stepping=$(grep -m1 '^stepping' /proc/cpuinfo | awk '{print $3}' || true)
     model_name=$(grep -m1 '^model name' /proc/cpuinfo | cut -d: -f2- | sed -e 's/^[ \t]*//' || true)
@@ -1418,13 +1417,21 @@ cmd_qcnl() {
 
             local test_url="${collateral_url:-$pccs_url}"
             if [[ -n "$test_url" ]]; then
-                local qve_url="${test_url%/}/qve/identity"
+                # The QCNL pccs_url is a BASE url; the PCS v4 API lives under
+                # /sgx/certification/v4/ (or /tdx/...). Probe a real endpoint,
+                # not a bare path.
+                local probe_base="${test_url%/}"
+                [[ "$probe_base" == *"/certification/v4"* ]] || probe_base="${probe_base}/sgx/certification/v4"
+                local qve_url="${probe_base}/qe/identity"
                 local qve_code
-                qve_code=$(curl -s -o /dev/null -w "%{http_code}" "$qve_url" 2>/dev/null || echo "000")
+                qve_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$qve_url" 2>/dev/null || echo "000")
                 if [[ "$qve_code" == "200" ]]; then
                     log_info "Reachability (${qve_url}): HTTP 200 OK"
                 else
-                    log_error "Reachability (${qve_url}): HTTP ${qve_code} (Network or URL issue)"
+                    log_error "Reachability (${qve_url}): HTTP ${qve_code} (network issue, wrong URL, or TLS not trusted)"
+                    if [[ "$qve_code" == "000" && "$test_url" =~ ^https:// ]]; then
+                        log_error "TLS verification failed — for a local PCCS with a private CA, anchor it first (run: ${SCRIPT_NAME} local-pccs)"
+                    fi
                     exit_code=1
                 fi
             fi
@@ -1454,6 +1461,148 @@ cmd_qcnl() {
         fi
     fi
 
+    return $exit_code
+}
+
+# =============================================================================
+# LOCAL PCCS DEPLOYMENT AUDIT (TLS chain + trust stores)
+# =============================================================================
+# One-shot audit of a locally deployed PCCS (suse-sgx-dcap-pccs). This catches
+# the classic failure mode where CoCo-AS rejects the PCCS TLS chain with
+# UnknownIssuer: the served leaf is not signed by a CA anchored in the p11-kit
+# system trust store (which rustls reads), or the CA is missing from the
+# OpenSSL bundle (which curl/QCNL read).
+cmd_local_pccs() {
+    log_section "Local PCCS Deployment Audit"
+    local exit_code=0
+    local ca_pem="/var/lib/pccs/pccs-ca.pem"
+    local leaf_crt="/var/lib/pccs/file.crt"
+    local port=8081
+    local cfg="/usr/libexec/suse-sgx-dcap-pccs/config/default.json"
+    if [[ -f "$cfg" ]]; then
+        port=$(sed -n 's/.*"HTTPS_PORT"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$cfg" | head -1)
+    fi
+    port="${port:-8081}"
+
+    echo "--- 1. Service ---"
+    if systemctl is-active --quiet pccs.service 2>/dev/null; then
+        log_info "pccs.service: active"
+    else
+        log_error "pccs.service: NOT active (systemctl status pccs.service)"
+        exit_code=1
+    fi
+
+    echo "--- 2. Server certificate (leaf) ---"
+    if [[ -f "$leaf_crt" ]]; then
+        local subj issuer caflag san
+        subj=$(openssl x509 -in "$leaf_crt" -noout -subject 2>/dev/null | sed 's/^subject=//')
+        issuer=$(openssl x509 -in "$leaf_crt" -noout -issuer 2>/dev/null | sed 's/^issuer=//')
+        caflag=$(openssl x509 -in "$leaf_crt" -noout -text 2>/dev/null | grep -A1 "X509v3 Basic Constraints" | grep -o "CA:TRUE\|CA:FALSE" | head -1)
+        san=$(openssl x509 -in "$leaf_crt" -noout -ext subjectAltName 2>/dev/null | tail -1)
+        log_info "Subject: ${subj:-<unreadable>}"
+        log_info "Issuer:  ${issuer:-<unreadable>}"
+        log_info "CA flag: ${caflag:-<none>}"
+        log_info "SAN:     ${san:-<none>}"
+        if [[ "$caflag" == "CA:TRUE" ]]; then
+            log_error "Leaf is a CA certificate (CA:TRUE) — rustls rejects CA certs used as end-entity (CaUsedAsEndEntity)"
+            exit_code=1
+        fi
+        if [[ -n "$subj" && "$subj" == "$issuer" ]]; then
+            log_error "Leaf is SELF-SIGNED (subject == issuer) — it cannot chain to a trusted anchor (UnknownIssuer)"
+            exit_code=1
+        fi
+        if [[ -z "$san" ]]; then
+            log_error "Leaf has no subjectAltName — TLS clients will reject it (name mismatch)"
+            exit_code=1
+        fi
+    else
+        log_error "Leaf certificate not found: $leaf_crt"
+        exit_code=1
+    fi
+
+    echo "--- 3. CA chain ---"
+    if [[ -f "$ca_pem" && -f "$leaf_crt" ]]; then
+        if openssl verify -CAfile "$ca_pem" "$leaf_crt" >/dev/null 2>&1; then
+            log_info "Leaf chains to local CA ($ca_pem)"
+        else
+            log_error "Leaf does NOT chain to $ca_pem"
+            log_error "Fix: re-run tdx-attest.sh setup-host --collateral pccs --pccs-url https://127.0.0.1:8081 --deploy-pccs"
+            exit_code=1
+        fi
+    else
+        log_error "PCCS CA not found: $ca_pem (expected from --deploy-pccs)"
+        exit_code=1
+    fi
+
+    echo "--- 4. Trust stores ---"
+    if [[ -f "$ca_pem" ]]; then
+        local cn
+        cn=$(openssl x509 -in "$ca_pem" -noout -subject -nameopt sep_multiline 2>/dev/null | sed -n 's/^ *CN *= *//p' | head -1)
+        # p11-kit store — read by rustls (CoCo-AS)
+        if command -v trust >/dev/null 2>&1; then
+            local trust_out
+            trust_out=$(trust list 2>/dev/null || true)
+            # Capture first: `trust list | grep -q` is unreliable under pipefail.
+            if grep -q "label: ${cn}" <<<"$trust_out"; then
+                log_info "p11-kit store: CA anchored (label: ${cn})"
+            else
+                log_error "p11-kit store: CA NOT anchored — CoCo-AS (rustls) will reject the chain"
+                log_error "Fix: trust anchor $ca_pem && systemctl restart grpc-as"
+                exit_code=1
+            fi
+        else
+            log_warn "p11-kit 'trust' tool not found; cannot check the p11-kit store"
+        fi
+        # OpenSSL bundle — read by curl / QCNL / DCAP C clients
+        local bundle="/etc/pki/tls/certs/ca-bundle.crt"
+        if [[ -f "$bundle" ]]; then
+            local marker
+            marker=$(awk '/BEGIN CERT/{f=1;next}/END CERT/{f=0}f' "$ca_pem" | head -1)
+            if grep -qF "$marker" "$bundle"; then
+                log_info "OpenSSL bundle: CA present ($bundle)"
+            else
+                log_error "OpenSSL bundle: CA missing — curl/QCNL will reject the chain"
+                log_error "Fix: cat $ca_pem >> $bundle"
+                exit_code=1
+            fi
+        else
+            log_warn "OpenSSL bundle not found: $bundle"
+        fi
+    fi
+
+    echo "--- 5. Live TLS handshake ---"
+    local out
+    if out=$(echo | openssl s_client -connect "127.0.0.1:${port}" -CAfile "$ca_pem" 2>/dev/null); then
+        if grep -q "Verify return code: 0 (ok)" <<<"$out"; then
+            log_info "TLS handshake verified against local CA: code 0 (ok)"
+        else
+            log_error "TLS handshake verification FAILED:"
+            grep -E "Verify return code|verify error" <<<"$out" | head -3
+            exit_code=1
+        fi
+    else
+        log_error "TLS handshake with 127.0.0.1:${port} failed (service down?)"
+        exit_code=1
+    fi
+
+    echo "--- 6. Collateral endpoint ---"
+    local url="https://127.0.0.1:${port}/tdx/certification/v4/qe/identity"
+    local code
+    code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$url" 2>/dev/null || echo "000")
+    if [[ "$code" == "200" ]]; then
+        log_info "TDX QE identity endpoint: HTTP 200 (TLS verified by curl — CA is in the OpenSSL bundle)"
+    else
+        log_error "TDX QE identity endpoint: HTTP ${code}"
+        [[ "$code" == "000" ]] && log_error "curl could not complete the request — TLS not trusted? (see section 4)"
+        exit_code=1
+    fi
+
+    echo ""
+    if ((exit_code)); then
+        log_error "Local PCCS audit FAILED — fix the items above, then restart pccs + grpc-as"
+    else
+        log_info "Local PCCS audit PASSED — deployment, TLS chain and trust stores are consistent"
+    fi
     return $exit_code
 }
 
@@ -1571,6 +1720,7 @@ main() {
     collateral) cmd_collateral ;;
     check) cmd_check ;;
     qcnl) cmd_qcnl ;;
+    local-pccs) cmd_local_pccs ;;
     register) cmd_register ;;
     help | --help | -h) usage ;;
     *)

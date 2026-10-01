@@ -49,9 +49,21 @@ QGS_SOCKET="/var/run/tdx-qgs/qgs.socket"
 # for PCK certificates / TCB info. Method 1 ('--collateral pcs') points QCNL
 # and CoCo-AS directly at it.
 PCS_URL="${PCS_URL:-https://api.trustedservices.intel.com/sgx/certification/v4/}"
-# PCCS (Platform Configuration and Certification Service): a local/regional
-# *cache* of PCS. Method 2 ('--collateral pccs') uses a local caching service.
-PCCS_URL="http://127.0.0.1:8081"
+# PCCS (Provisioning Certification Caching Service): a local/regional *cache*
+# of PCS. Method 2 ('--collateral pccs') uses a local caching service.
+# The SLES suse-sgx-dcap-pccs package serves HTTPS only, on 127.0.0.1:8081
+# (see /usr/libexec/suse-sgx-dcap-pccs/config). This is the base URL: QCNL and
+# CoCo-AS append the /sgx|tdx/certification/v4/ API paths themselves.
+PCCS_URL="https://127.0.0.1:8081"
+# Paths used by --deploy-pccs (SLES suse-sgx-dcap-pccs package layout):
+# the server reads its leaf cert/key from the HTTPS_file_crt / HTTPS_private_pem
+# config keys, which point at /var/lib/pccs/file.crt + private.pem.
+readonly PCCS_SERVER_DIR="/var/lib/pccs"
+readonly PCCS_SERVER_CA="${PCCS_SERVER_DIR}/pccs-ca.pem"
+readonly PCCS_SERVER_CA_KEY="${PCCS_SERVER_DIR}/pccs-ca.key"
+readonly PCCS_SERVER_CERT="${PCCS_SERVER_DIR}/file.crt"
+readonly PCCS_SERVER_KEY="${PCCS_SERVER_DIR}/private.pem"
+readonly PCCS_CONFIG_FILE="/usr/libexec/suse-sgx-dcap-pccs/config/default.json"
 # Optional path to custom PCCS root CA certificate (for HTTPS self-signed)
 PCCS_CA=""
 # PCCS identifier (optional identifier if used by custom deployments)

@@ -312,17 +312,26 @@ find_tdx_ovmf() {
 
 probe_collateral_url() {
     local url="$1"
+    local base="${url%/}"
+    # The PCS v4 API lives under /<tdx|sgx>/certification/v4/. If the given
+    # URL is a bare base (e.g. a PCCS host:port), probe real endpoints under
+    # it instead of paths that 404 at the server root.
     # 1. Try Intel PCS lightweight endpoint (HTTP 200, no auth required)
-    local probe_url="${url%/}/tcbevaluationdatanumbers"
-    if curl -s -f --max-time 10 "$probe_url" >/dev/null 2>&1; then
-        return 0
+    local probe_urls
+    if [[ "$base" == *"/certification/v4"* ]]; then
+        probe_urls=("${base}/tcbevaluationdatanumbers" "${base}/qe/identity")
+    else
+        probe_urls=("${base}/tdx/certification/v4/qe/identity"
+                    "${base}/sgx/certification/v4/qe/identity"
+                    "${base}/tcbevaluationdatanumbers" "${base}/qe/identity")
     fi
-    # 2. Try QE identity endpoint
-    local qe_probe="${url%/}/qe/identity"
-    if curl -s -f --max-time 10 "$qe_probe" >/dev/null 2>&1; then
-        return 0
-    fi
-    # 3. Fallback: check if server responds with valid HTTP status (200, 400, 401, 404)
+    local probe_url
+    for probe_url in "${probe_urls[@]}"; do
+        if curl -s -f --max-time 10 "$probe_url" >/dev/null 2>&1; then
+            return 0
+        fi
+    done
+    # 2. Fallback: check if server responds with valid HTTP status (200, 400, 401, 404)
     local code
     code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$url" 2>/dev/null || echo "000")
     if [[ "$code" == "200" || "$code" == "400" || "$code" == "404" || "$code" == "401" ]]; then

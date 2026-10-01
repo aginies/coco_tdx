@@ -18,49 +18,56 @@ collateral_via_pcs() {
     log "Collateral source: global PCS (${PCS_URL})"
 }
 
-# Method 2: use a local PCCS cache. First fetch the PCCS root CA from PCS (the
-# "initial CA") and add it to the system trust store, so the DCAP clients
-# (QCNL/QGS, CoCo-AS) can verify the PCCS's TLS certificate.
-# If --deploy-pccs is set, this function also installs and starts the PCCS
-# server (suse-sgx-dcap-pccs package, pccs.service).
+# Method 2: use a local PCCS cache. The PCCS serves collateral over HTTPS
+# with a certificate that must chain to a root CA trusted by BOTH consumers:
+#   - CoCo-AS (rustls via rustls-platform-verifier) reads the p11-kit
+#     "System Trust" token — on SUSE that is populated via `trust anchor`
+#   - curl / QCNL / DCAP C clients verify against the OpenSSL CA bundle
+# A self-signed leaf is NOT acceptable: rustls rejects self-signed
+# end-entity certs (CaUsedAsEndEntity) and any chain whose issuer is not a
+# trusted anchor (UnknownIssuer).
+# If --deploy-pccs is set, the local PCCS server is deployed (or repaired):
+# suse-sgx-dcap-pccs package, pccs.service, CA + leaf chain, trust anchors.
 collateral_via_pccs() {
     [[ -n "$PCCS_URL" ]] || die "PCCS mode requires a PCCS endpoint (--pccs-url)"
     log "Collateral source: local PCCS (${PCCS_URL})"
-    ensure_pccs_root_ca
-    if [[ "$DEPLOY_PCCS" == "yes" ]]; then
+    if [[ "${DEPLOY_PCCS:-no}" == "yes" ]]; then
+        # Deploy/repair first: it generates the CA + leaf and anchors the CA,
+        # so it must run before any other CA handling.
         deploy_pccs_server
+    else
+        ensure_pccs_root_ca
     fi
 }
 
-# Fetch or install the PCCS root CA into the system trust store.
+# Decide which root CA an EXISTING (not deployed-by-us) PCCS uses and trust
+# it: --pccs-ca file, a previously installed $PCCS_ROOT_CA, or a fetch from
+# Intel PCS via --pccs-id. Plain HTTP endpoints need no CA.
 ensure_pccs_root_ca() {
-    # If custom CA specified via --pccs-ca, install it
-    if [[ -n "$PCCS_CA" ]]; then
-        if [[ -s "$PCCS_CA" ]]; then
-            log "Installing custom PCCS root CA from: ${PCCS_CA}"
-            mkdir -p "$(dirname "$PCCS_ROOT_CA")"
-            cp "$PCCS_CA" "$PCCS_ROOT_CA"
-            chmod 644 "$PCCS_ROOT_CA"
-            distro_ca_trust_refresh || warn "Trust store refresh failed; trust the CA manually: ${PCCS_ROOT_CA}"
-            log "PCCS root CA installed and trusted: ${PCCS_ROOT_CA}"
-            return 0
-        else
-            die "PCCS CA file specified by --pccs-ca does not exist or is empty: ${PCCS_CA}"
-        fi
-    fi
-
-    if [[ -s "$PCCS_ROOT_CA" ]]; then
-        log "PCCS root CA already trusted: ${PCCS_ROOT_CA}"
-        return 0
-    fi
-
     # Plain HTTP does not require a TLS root CA
     if [[ "$PCCS_URL" =~ ^http:// ]]; then
         log "PCCS endpoint uses plain HTTP (${PCCS_URL}); TLS root CA not required"
         return 0
     fi
 
-    # If PCCS_ID is given and an HTTPS endpoint is specified, try fetching if endpoint exists
+    # If custom CA specified via --pccs-ca, install it
+    if [[ -n "$PCCS_CA" ]]; then
+        [[ -s "$PCCS_CA" ]] || die "PCCS CA file specified by --pccs-ca does not exist or is empty: ${PCCS_CA}"
+        log "Installing custom PCCS root CA from: ${PCCS_CA}"
+        mkdir -p "$(dirname "$PCCS_ROOT_CA")"
+        cp "$PCCS_CA" "$PCCS_ROOT_CA"
+        chmod 644 "$PCCS_ROOT_CA"
+        ensure_ca_trusted "$PCCS_ROOT_CA"
+        return 0
+    fi
+
+    if [[ -s "$PCCS_ROOT_CA" ]]; then
+        log "PCCS root CA already installed: ${PCCS_ROOT_CA}"
+        ensure_ca_trusted "$PCCS_ROOT_CA"   # idempotent; covers missing anchors
+        return 0
+    fi
+
+    # If PCCS_ID is given, try fetching the PCCS root CA from Intel PCS.
     if [[ -n "$PCCS_ID" ]]; then
         log "Fetching PCCS root CA (pccs_id=${PCCS_ID})..."
         local tmp
@@ -74,83 +81,222 @@ ensure_pccs_root_ca() {
             fi
             rm -f "$tmp"
             chmod 644 "$PCCS_ROOT_CA"
-            distro_ca_trust_refresh || warn "Trust store refresh failed; trust the CA manually: ${PCCS_ROOT_CA}"
+            ensure_ca_trusted "$PCCS_ROOT_CA"
             log "PCCS root CA installed and trusted: ${PCCS_ROOT_CA}"
             return 0
         fi
         rm -f "$tmp"
         warn "Could not fetch PCCS root CA via ${PCS_URL%/}/pccs/${PCCS_ID}/pccsroot."
-        warn "If your local PCCS uses self-signed HTTPS, supply its CA certificate using --pccs-ca <file> or use --insecure."
+    fi
+
+    warn "No PCCS root CA available (no --pccs-ca, no --pccs-id, none installed)."
+    warn "If the PCCS uses a private/self-signed CA, CoCo-AS will reject its"
+    warn "TLS chain (UnknownIssuer). Supply the CA with --pccs-ca <file>, or"
+    warn "use --deploy-pccs to generate and anchor one automatically."
+}
+
+# Anchor a CA into every trust store on this system. CoCo-AS (rustls via
+# rustls-platform-verifier) reads the p11-kit "System Trust" token; curl,
+# QCNL and the DCAP C libraries verify against the OpenSSL CA bundle. Both
+# must contain the CA or one side of the attestation flow fails.
+# Idempotent: re-anchoring the same certificate creates no duplicates.
+ensure_ca_trusted() {
+    local ca_file="$1"
+    [[ -s "$ca_file" ]] || die "CA file not found or empty: $ca_file"
+    local cn
+    cn=$(openssl x509 -in "$ca_file" -noout -subject -nameopt sep_multiline 2>/dev/null \
+         | sed -n 's/^ *CN *= *//p' | head -1)
+    cn="${cn:-pccs-root-ca}"
+
+    # 1. p11-kit system trust store (CoCo-AS / rustls).
+    #    On SUSE, `trust anchor` writes a .p11-kit object into /etc/pki/trust/.
+    if command -v trust >/dev/null 2>&1; then
+        local trust_out
+        trust_out=$(trust list 2>/dev/null || true)
+        # NOTE: capture first — `trust list | grep -q` is unreliable under
+        # pipefail (grep -q exits early, producer gets SIGPIPE, pipeline fails).
+        if grep -q "label: ${cn}" <<<"$trust_out"; then
+            log "Root CA already anchored in p11-kit store (label: ${cn})"
+        else
+            log "Anchoring root CA into p11-kit store (trust anchor) ..."
+            run trust anchor "$ca_file" \
+                || warn "trust anchor failed — CoCo-AS may reject the PCCS TLS chain"
+        fi
+    else
+        warn "p11-kit 'trust' tool not found; cannot anchor CA for rustls/CoCo-AS"
+    fi
+
+    # 2. Distro anchor directory + refresh (update-ca-trust-based distros;
+    #    SLES 16.1 ships p11-kit-tools only, where the refresh is a no-op).
+    local anchor_dir="/etc/pki/ca-trust/source/anchors"
+    if [[ -d "$anchor_dir" ]]; then
+        local name
+        name=$(echo "$cn" | tr ' ' '_' | tr '[:upper:]' '[:lower:]')
+        install -m 0644 "$ca_file" "${anchor_dir}/${name}.pem"
+        distro_ca_trust_refresh || warn "trust store refresh failed (continuing)"
+    fi
+
+    # 3. OpenSSL CA bundle (curl, QCNL, DCAP C clients). No tool regenerates
+    #    this file on SLES 16.1, so append the certificate directly.
+    local bundle="/etc/pki/tls/certs/ca-bundle.crt"
+    if [[ -f "$bundle" ]]; then
+        local marker
+        marker=$(awk '/BEGIN CERT/{f=1;next}/END CERT/{f=0}f' "$ca_file" | head -1)
+        if grep -qF "$marker" "$bundle"; then
+            log "Root CA already in OpenSSL bundle"
+        else
+            log "Appending root CA to OpenSSL bundle ($bundle) ..."
+            cat "$ca_file" >> "$bundle"
+        fi
     fi
 }
 
-# Deploy and start the local PCCS server (suse-sgx-dcap-pccs package).
-# The unit is pccs.service (NOT pccs-server.service). It depends on MariaDB.
-# The PCCS listens on HTTPS port 8081 by default; the config lives at
-# /usr/libexec/suse-sgx-dcap-pccs/config/default.json (copied from
-# upstream.json template). On first start it fetches the PCK chain from
-# Intel PCS — requires temporary internet access.
-deploy_pccs_server() {
-    # Check if already running
-    if systemctl is-active --quiet pccs.service 2>/dev/null; then
-        log "PCCS server (pccs.service) is already running"
-        return 0
+# Ensure the local PCCS has a proper CA + leaf certificate chain:
+#   - root CA:  /var/lib/pccs/pccs-ca.pem  (CA:TRUE, keyCertSign+cRLSign)
+#   - leaf:     /var/lib/pccs/file.crt     (CA:FALSE, SAN 127.0.0.1, serverAuth)
+# The PCCS server reads the leaf from the HTTPS_file_crt / HTTPS_private_pem
+# config keys (/var/lib/pccs/file.crt + private.pem). The CA private key is
+# kept at /var/lib/pccs/pccs-ca.key so the leaf can be re-signed later.
+# Idempotent: an existing leaf that already chains to the existing CA is kept.
+ensure_pccs_cert_chain() {
+    # --- Root CA -----------------------------------------------------------
+    if [[ -f "$PCCS_SERVER_CA" && -f "$PCCS_SERVER_CA_KEY" ]] \
+        && openssl x509 -in "$PCCS_SERVER_CA" -noout >/dev/null 2>&1 \
+        && openssl rsa -in "$PCCS_SERVER_CA_KEY" -noout -check >/dev/null 2>&1; then
+        log "PCCS root CA already present ($PCCS_SERVER_CA)"
+    else
+        log "Generating local PCCS root CA ($PCCS_SERVER_CA) ..."
+        openssl genrsa -out "$PCCS_SERVER_CA_KEY" 2048 2>/dev/null
+        openssl req -x509 -new -key "$PCCS_SERVER_CA_KEY" -sha256 -days 3650 \
+            -subj "/C=US/O=coco_tdx/CN=Local PCCS Root CA" \
+            -addext "basicConstraints=critical,CA:TRUE" \
+            -addext "keyUsage=critical,keyCertSign,cRLSign" \
+            -out "$PCCS_SERVER_CA" 2>/dev/null
     fi
 
-    # Check if the package is installed
+    # --- Server leaf (regenerate only if it does not chain to the CA) ------
+    if [[ -f "$PCCS_SERVER_CERT" && -f "$PCCS_SERVER_KEY" ]] \
+        && openssl verify -CAfile "$PCCS_SERVER_CA" "$PCCS_SERVER_CERT" >/dev/null 2>&1; then
+        log "PCCS server certificate already chains to the local CA"
+    else
+        log "Generating PCCS server certificate (leaf signed by local CA) ..."
+        if [[ ! -f "$PCCS_SERVER_KEY" ]] \
+            || ! openssl rsa -in "$PCCS_SERVER_KEY" -noout -check >/dev/null 2>&1; then
+            openssl genrsa -out "$PCCS_SERVER_KEY" 2048 2>/dev/null
+        fi
+        local csr="${PCCS_SERVER_CERT}.csr" ext
+        openssl req -new -key "$PCCS_SERVER_KEY" -subj "/CN=127.0.0.1" -out "$csr" 2>/dev/null
+        ext=$(mktemp)
+        cat > "$ext" <<'EOF'
+subjectAltName=DNS:127.0.0.1,IP:127.0.0.1
+basicConstraints=CA:FALSE
+keyUsage=critical,digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth
+EOF
+        openssl x509 -req -in "$csr" -CA "$PCCS_SERVER_CA" -CAkey "$PCCS_SERVER_CA_KEY" \
+            -CAcreateserial -days 3650 -sha256 -extfile "$ext" \
+            -out "$PCCS_SERVER_CERT" 2>/dev/null
+        rm -f "$ext" "$csr"
+    fi
+
+    chown -R pccs:pccs "$PCCS_SERVER_DIR" 2>/dev/null || true
+    chmod 600 "$PCCS_SERVER_CA_KEY" "$PCCS_SERVER_KEY"
+    chmod 644 "$PCCS_SERVER_CA" "$PCCS_SERVER_CERT"
+}
+
+# Verify the PCCS TLS chain end-to-end: live handshake + verification against
+# the local CA. This is the check that catches the "leaf not signed by the
+# anchored CA" failure mode (UnknownIssuer in the CoCo-AS logs).
+verify_pccs_tls() {
+    local port=8081
+    if [[ -f "$PCCS_CONFIG_FILE" ]]; then
+        port=$(sed -n 's/.*"HTTPS_PORT"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
+               "$PCCS_CONFIG_FILE" | head -1)
+    fi
+    port="${port:-8081}"
+    local out
+    if ! out=$(echo | openssl s_client -connect "127.0.0.1:${port}" \
+               -CAfile "$PCCS_SERVER_CA" 2>/dev/null); then
+        warn "TLS handshake with PCCS on 127.0.0.1:${port} failed (service not up?)"
+        return 1
+    fi
+    if grep -q "Verify return code: 0 (ok)" <<<"$out"; then
+        log "PCCS TLS chain verified: leaf (SAN 127.0.0.1) -> local CA, code 0 (ok)"
+        return 0
+    fi
+    error "PCCS TLS verification FAILED — CoCo-AS will reject the chain:"
+    grep -E "Verify return code|verify error" <<<"$out" | head -3
+    error "Fix: re-run with --deploy-pccs (regenerates CA + leaf and re-anchors)."
+    return 1
+}
+
+# Deploy (or repair) a local PCCS server for air-gapped / offline attestation.
+# The suse-sgx-dcap-pccs package ships a self-signed leaf that is NOT usable
+# as-is: rustls requires a proper leaf (CA:FALSE + SAN) signed by a root CA
+# anchored in the p11-kit system trust store. This function:
+#   1. installs the package (if missing)
+#   2. ensures the config exists (upstream.json -> default.json)
+#   3. generates/repairs the CA + leaf chain (idempotent)
+#   4. anchors the CA in p11-kit + the OpenSSL bundle
+#   5. (re)starts pccs and, if present, grpc-as — rustls loads the native
+#      trust store at process start, so an anchor added later is invisible
+#      to a running CoCo-AS until it is restarted
+#   6. verifies the live TLS chain
+# Safe to re-run: a healthy deployment is left untouched apart from a service
+# restart; a broken one (e.g. self-signed leaf) is repaired in place.
+deploy_pccs_server() {
+    log "Deploying local PCCS server ..."
+
+    # 1. Package.
     if ! rpm -q suse-sgx-dcap-pccs >/dev/null 2>&1; then
         log "Installing suse-sgx-dcap-pccs package..."
         zypper in -y suse-sgx-dcap-pccs || die "Failed to install suse-sgx-dcap-pccs"
     fi
 
-    # Ensure MariaDB is running (PCCS depends on it)
+    # 2. Config (template -> active). The packaged default uses the sqlite
+    #    cache at /var/lib/pccs/pckcache.db, the Intel PCS upstream, lazy
+    #    fill and a daily refresh schedule.
+    if [[ ! -f "$PCCS_CONFIG_FILE" && -f /usr/libexec/suse-sgx-dcap-pccs/config/upstream.json ]]; then
+        log "Copying PCCS config template: upstream.json -> default.json"
+        cp /usr/libexec/suse-sgx-dcap-pccs/config/upstream.json "$PCCS_CONFIG_FILE"
+    fi
+
+    # 3. MariaDB (soft dependency: the unit is After=mariadb.service and the
+    #    mysql config option needs it; the packaged default uses sqlite).
     if ! systemctl is-active --quiet mariadb.service 2>/dev/null; then
         log "Starting MariaDB (PCCS dependency)..."
-        systemctl enable --now mariadb.service || warn "MariaDB failed to start; PCCS may not work"
+        systemctl enable --now mariadb.service || warn "MariaDB failed to start; PCCS may not work with the mysql config"
     fi
 
-    # Copy upstream config template → default config if not present
-    if [[ ! -f /usr/libexec/suse-sgx-dcap-pccs/config/default.json ]]; then
-        log "Copying PCCS config template: upstream.json → default.json"
-        cp /usr/libexec/suse-sgx-dcap-pccs/config/upstream.json \
-           /usr/libexec/suse-sgx-dcap-pccs/config/default.json
+    # 4. Certificate chain (CA + leaf).
+    ensure_pccs_cert_chain
+
+    # 5. Trust anchors (p11-kit for rustls/CoCo-AS, OpenSSL bundle for the rest).
+    ensure_ca_trusted "$PCCS_SERVER_CA"
+
+    # 6. (Re)start the service so it picks up the leaf, then CoCo-AS so it
+    #    re-reads the native trust store.
+    log "Starting PCCS server (pccs.service) ..."
+    systemctl enable --now pccs.service || die "Failed to start pccs.service (unit is pccs.service, not pccs-server.service)"
+    local units
+    units=$(systemctl list-unit-files 2>/dev/null || true)
+    if grep -q '^grpc-as\.service' <<<"$units"; then
+        log "Restarting grpc-as (rustls caches the trust store at startup) ..."
+        systemctl restart grpc-as.service || warn "grpc-as restart failed"
     fi
 
-    # Start the PCCS service
-    log "Starting PCCS server (pccs.service) on port 8081..."
-    systemctl enable --now pccs.service || die "Failed to start pccs.service"
+    # 7. End-to-end TLS verification (retry: the service needs a moment).
+    local ok=0
+    for _ in 1 2 3 4 5; do
+        if verify_pccs_tls; then ok=1; break; fi
+        sleep 2
+    done
+    ((ok)) || die "PCCS is running but its TLS chain does not verify — see messages above"
 
-    # Verify it is serving
-    sleep 3
-    if curl -sk --max-time 10 https://127.0.0.1:8081/tdx/certification/v4/tcb >/dev/null 2>&1; then
-        log "PCCS server is up and serving collateral"
-    else
-        warn "PCCS service started but did not respond to HTTP probe within 3s."
-        warn "Check: journalctl -u pccs.service"
-    fi
-
-    # If PCCS uses HTTPS (default), install its root CA into the trust store
-    # so that QCNL/CoCo-AS can verify the self-signed cert.
-    if [[ "$PCCS_URL" =~ ^http:// ]]; then
-        log "PCCS URL is plain HTTP (${PCCS_URL}); skipping root CA installation"
-        return 0
-    fi
-
-    # The PCCS generates a self-signed cert at /var/lib/pccs/file.crt.
-    # Install it as the PCCS root CA so DCAP clients trust it.
-    local pccs_cert="/var/lib/pccs/file.crt"
-    if [[ -s "$pccs_cert" ]]; then
-        log "Installing PCCS self-signed root CA into system trust store..."
-        mkdir -p "$(dirname "$PCCS_ROOT_CA")"
-        cp "$pccs_cert" "$PCCS_ROOT_CA"
-        chmod 644 "$PCCS_ROOT_CA"
-        distro_ca_trust_refresh || warn "Trust store refresh failed; trust the CA manually: ${PCCS_ROOT_CA}"
-        log "PCCS root CA installed and trusted: ${PCCS_ROOT_CA}"
-    else
-        warn "PCCS cert not found at ${pccs_cert}; QCNL/CoCo-AS may need --insecure"
-    fi
-
-    log "PCCS deployment complete: service=pccs.service, port=8081, config=/usr/libexec/suse-sgx-dcap-pccs/config/default.json"
+    log "Local PCCS ready at https://127.0.0.1:8081 (CA: $PCCS_SERVER_CA)"
+    log "Note: with CachingFillMode=LAZY the PCCS fetches missing collateral"
+    log "from Intel PCS on first request — warm the cache while online"
+    log "(e.g. ./pccs-check.sh tcb --tdx --pccs-url $PCCS_URL) before going offline."
 }
 
 # Select the collateral source (method 1 = PCS, method 2 = PCCS) and prepare
