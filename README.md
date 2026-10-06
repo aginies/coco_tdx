@@ -1,4 +1,4 @@
-# Intel TDX Attestation — Step-by-Step Guide
+# Intel TDX Attestation — Step-by-Step Guide (Technology Preview SLES16.1)
 
 Version 1.3.0
 
