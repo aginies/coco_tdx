@@ -14,6 +14,7 @@
   <a href="#attestation-process--visual-overview"><span class="n">◈</span>Visual Overview</a>
   <a href="#prerequisites-before-any-script-command"><span class="n">•</span>Prerequisites</a>
   <a href="#platform-validation--registration-with-pccs-checksh"><span class="n">•</span>Platform Validation</a>
+  <a href="#step-0--install-packages-from-opensuse-factory-latest-release"><span class="n">0</span>Install packages from openSUSE Factory (latest release)</a>
   <a href="#detailed-steps-15-host-setup-individual"><span class="n">1</span>Detailed Steps 1–5 (host setup, individual)</a>
   <a href="#step-6--install-the-guest-os-manual"><span class="n">6</span>Install the guest OS (manual)</a>
   <a href="#step-7--set-up-the-guest-inside-the-td"><span class="n">7</span>Set up the guest (inside the TD)</a>
@@ -32,7 +33,7 @@
 
 <header class="hero">
   <h1>Intel TDX Attestation — Step-by-Step Guide</h1>
-  <p>Version 1.1.0</p>
+  <p>Version 1.2.0</p>
 </header>
 
 
@@ -50,6 +51,9 @@
 <hr>
 <h2 id="quick-start--11-commands-on-a-ready-host">Quick Start — 11 commands on a ready host</h2>
 <p><strong>Goal in one sentence:</strong> prove to a remote verifier that the guest is a genuine, untampered TDX Trust Domain, and only then hand it a secret.</p>
+<div class="callout info">
+  <p><strong>Step 0 (once per host, before anything else):</strong> install the packages from openSUSE Factory — see <a href="#step-0--install-packages-from-opensuse-factory-latest-release">Step 0</a>.</p>
+</div>
 <p class="caption"><strong>The happy path (11 commands):</strong></p>
 <pre># 1. Host preparation &amp; platform check
 sudo ./tdx-attest.sh check --check-platform
@@ -73,7 +77,15 @@ sudo ./tdx-attest.sh attest --guest-ip &lt;GUEST_IP&gt; --register-rv
 sudo ./tdx-attest.sh secret-set --file /tmp/my-secret --path default/test/secret
 sudo ./tdx-attest.sh secret-get --guest-ip &lt;GUEST_IP&gt; --path default/test/secret</pre>
 <div class="callout info">
-  <strong>Prerequisites before starting:</strong>  - Intel CPU with TDX (Sapphire Rapids, Emerald Rapids, Xeon 6+) - TDX enabled in BIOS (<code>kvm_intel.tdx=1</code> in kernel cmdline) - VT-x enabled in BIOS - SLES 16.1 installer ISO (from SUSE Customer Center) - Internet access to Intel PCS (or a local PCCS cache) - <a href="#prerequisites-before-any-script-command">Full prerequisites →</a>
+  <p><strong>Prerequisites before starting:</strong></p>
+  <ul>
+    <li>Intel CPU with TDX (Sapphire Rapids, Emerald Rapids, Xeon 6+)</li>
+    <li>TDX enabled in BIOS (<code>kvm_intel.tdx=1</code> in kernel cmdline)</li>
+    <li>VT-x enabled in BIOS</li>
+    <li>SLES 16.1 installer ISO (from SUSE Customer Center)</li>
+    <li>Internet access to Intel PCS (or a local PCCS cache)</li>
+    <li><a href="#prerequisites-before-any-script-command">Full prerequisites →</a></li>
+  </ul>
 </div>
 <hr>
 <h2 id="attestation-flow-remote-path-as-driven-by-this-guide">Attestation flow (remote path, as driven by this guide)</h2>
@@ -88,7 +100,7 @@ sudo ./tdx-attest.sh secret-get --guest-ip &lt;GUEST_IP&gt; --path default/test/
 </ol>
 <div class="callout info">
   <span class="tag">Note</span>
-  the <code>tdx-attest.sh</code> script drives the guest over <strong>ssh</strong> (<code>setup-guest</code>, <code>attest</code>, <code>secret-get</code>), but the attestation data path itself is vsock (quote) + HTTP (KBS). Diagrams of the full process (guest vs host, local vs remote paths) are in the <a href="#attestation-process--visual-overview">Attestation Process — Visual Overview</a> section below.
+  <p>the <code>tdx-attest.sh</code> script drives the guest over <strong>ssh</strong> (<code>setup-guest</code>, <code>attest</code>, <code>secret-get</code>), but the attestation data path itself is vsock (quote) + HTTP (KBS). Diagrams of the full process (guest vs host, local vs remote paths) are in the <a href="#attestation-process--visual-overview">Attestation Process — Visual Overview</a> section below.</p>
 </div>
 <hr>
 <h2 id="attestation-process--visual-overview">Attestation Process — Visual Overview</h2>
@@ -102,7 +114,7 @@ sudo ./tdx-attest.sh secret-get --guest-ip &lt;GUEST_IP&gt; --path default/test/
 <table>
   <tr><th>I want to…</th><th>Use this</th></tr>
   <tr><td>Get everything running in one shot</td><td><code>./tdx-attest.sh all --guest-iso …</code> → <a href="#step-6--install-the-guest-os-manual">jump to Step 6</a></td></tr>
-  <tr><td>Understand each layer individually</td><td><a href="#one-shot-setup-tdx-attestsh-all">Steps 1–5</a> below</td></tr>
+  <tr><td>Understand each layer individually</td><td><a href="#one-shot-setup-tdx-attestsh-all">Steps 0–5</a> below</td></tr>
   <tr><td>Debug a broken setup</td><td><a href="#troubleshooting-map">Troubleshooting</a></td></tr>
   <tr><td>Only check if my platform works</td><td><code>./pccs-check.sh check --auto --tdx</code></td></tr>
   <tr><td>Run in an air-gapped / offline environment</td><td><code>--collateral pccs --pccs-url …</code></td></tr>
@@ -111,6 +123,7 @@ sudo ./tdx-attest.sh secret-get --guest-ip &lt;GUEST_IP&gt; --path default/test/
 <h2 id="what-each-step-actually-changes">What each step actually changes</h2>
 <table>
   <tr><th>Step</th><th>Changes on disk?</th><th>Changes network?</th><th>Requires reboot?</th><th>Can be skipped?</th></tr>
+  <tr><td><a href="#step-0--install-packages-from-opensuse-factory-latest-release">0. Install packages from openSUSE Factory (latest release)</a></td><td>Yes (packages)</td><td>Yes (new repo)</td><td>No</td><td>Only if already done</td></tr>
   <tr><td><a href="#step-1--check-host-capabilities">1. Check host capabilities</a></td><td>No</td><td>No</td><td>No</td><td>No (safety gate)</td></tr>
   <tr><td><a href="#step-2--set-up-the-host-dcap-stack">2. setup-host (DCAP stack)</a></td><td>Yes (packages, QCNL config)</td><td>No</td><td>No</td><td>Only if already done</td></tr>
   <tr><td><a href="#step-3--set-up-qgs-quote-signing">3. setup-qgs (quote signing)</a></td><td>Yes (unit files, socket)</td><td>No</td><td>No</td><td>Only if already done</td></tr>
@@ -137,16 +150,16 @@ sudo ./tdx-attest.sh secret-get --guest-ip &lt;GUEST_IP&gt; --path default/test/
 cd coco_tdx</pre>
 <p>This gives you the full history, all branches, and the ability to update with <code>git pull</code>.</p>
 <p class="caption"><strong>Option 2 — Download a specific release tarball:</strong></p>
-<pre>VERSION="1.1.0"
+<pre>VERSION="1.2.0"
 curl -LO "https://github.com/aginies/coco_tdx/releases/download/v${VERSION}/coco_tdx-${VERSION}.tar.gz"
 tar xzf coco_tdx-${VERSION}.tar.gz
 cd coco_tdx-${VERSION}</pre>
 <p>The tarball contains a versioned subdirectory with all scripts, the library, and documentation — ready to use without Git.</p>
 <p class="caption"><strong>Option 3 — Download a single branch or tag:</strong></p>
 <pre># Download a specific tag without cloning the full repo
-curl -LO "https://github.com/aginies/coco_tdx/archive/refs/tags/v1.1.0.tar.gz"
-tar xzf v1.1.0.tar.gz
-cd coco_tdx-1.1.0</pre>
+curl -LO "https://github.com/aginies/coco_tdx/archive/refs/tags/v1.2.0.tar.gz"
+tar xzf v1.2.0.tar.gz
+cd coco_tdx-1.2.0</pre>
 <hr>
 <h2 id="prerequisites-before-any-script-command">Prerequisites <span>(before any script command)</span></h2>
 <table>
@@ -276,7 +289,34 @@ PCESVN STATUS         DATE         WARNING
   --pceid &lt;4-hex-chars&gt; \
   --subscription &lt;YOUR_KEY&gt;</pre>
 <hr>
+<!-- ============ STEP 0 ============ -->
+<div class="step" id="step-0--install-packages-from-opensuse-factory-latest-release">
+<h2><span class="step-badge">Step 0</span>Install packages from openSUSE Factory (latest release)</h2>
+<p>Factory (the Tumbleweed target of the <code>Virtualization:SGX</code> OBS project) always carries the newest builds — DCAP, QGS, and Trustee ≥ 0.21 (the <code>kbs-client</code> with the TDX attester that Step 7 requires). The SLES 16.1 repositories lag behind, so from now on Factory is the package source for this setup: installing from Factory first guarantees every component comes from the same recent source. The setup steps below only install what is missing (<code>rpm -q</code> first), so this makes their package installs no-ops — nothing is downgraded or duplicated.</p>
+<p class="caption"><strong>Command:</strong></p>
+<pre># 1. Add the openSUSE Factory repository (Virtualization:SGX project)
+sudo zypper ar -cf https://download.opensuse.org/repositories/Virtualization:/SGX/openSUSE_Tumbleweed/ obs_SGX_factory
+sudo zypper refresh
+
+# 2. Install the attestation stack from Factory
+sudo zypper in -y \
+    suse-libsgx-dcap-default-qpl libdcap_quoteprov1 libsgx_dcap_quoteverify1 \
+    suse-libsgx-dcap-quoteverify-devel \
+    suse-tdx-qgs \
+    trustee libtdx_attest1 libsgx_tdx_logic1 suse-libtdx-attest-devel \
+    grpcurl
+
+# Optional — only for a local PCCS (Step 12 / air-gapped):
+# sudo zypper in -y suse-sgx-dcap-pccs</pre>
+<p><strong>Note:</strong> the virtualization packages (<code>qemu</code>, <code>libvirt-*</code>, the TDX OVMF firmware) are <strong>not</strong> in this repository — they come from the host's base repositories and are handled by the later steps. The guest's own packages are installed by <code>setup-guest</code> (Step 7) from the guest's repositories.</p>
+<p class="caption"><strong>Verify:</strong></p>
+<pre>zypper lr -t | grep -i factory                            # repo enabled
+rpm -qa | grep -Ei 'dcap|sgx|qpl|trustee|tdx-qgs|grpcurl' # packages present</pre>
+<hr>
+</div>
+
 <h2 id="one-shot-setup-tdx-attestsh-all">One-shot setup: <code>tdx-attest.sh all</code></h2>
+<p><strong>Run <a href="#step-0--install-packages-from-opensuse-factory-latest-release">Step 0</a> first</strong> — <code>all</code> does not add the Factory repository for you.</p>
 <p>Instead of running Steps 1–5 one by one, a single command chains them:</p>
 <pre>sudo ./tdx-attest.sh all --guest-iso /path/to/SLE-16.1.x86_64.iso</pre>
 <p>It runs <code>check</code> → <code>setup-host</code> → <code>setup-qgs</code> → <code>setup-trustee</code> → <code>setup-vm</code> in order, <strong>stops on the first hard failure</strong> (the capability check aborts before anything is installed), and finishes with a <code>verify</code> audit of the host-side configuration.</p>
@@ -284,12 +324,12 @@ PCESVN STATUS         DATE         WARNING
   <li><em>When to use it:</em> a fresh host where you want the complete stack up in one go.</li>
   <li><em>When to use the individual steps instead:</em> debugging a specific layer, or re-running after a partial failure — every step is idempotent, so re-running just the failed one is safe.</li>
 </ul>
-<p><code>all</code> stops at VM start: the manual guest OS install (Step 6) and everything after it (Steps 7–9) still have to be done by hand. <strong>If you used <code>all</code>, skip straight to Step 6</strong> — Steps 1–5 below are only for running things individually.</p>
+<p><code>all</code> stops at VM start: the manual guest OS install (Step 6) and everything after it (Steps 7–9) still have to be done by hand. <strong>If you used <code>all</code>, skip straight to Step 6</strong> — Steps 0–5 below are only for running things individually.</p>
 <hr>
 <div class="step" id="detailed-steps-15-host-setup-individual">
 <h2>Detailed Steps 1–5 (host setup, individual)</h2>
 <div class="callout info">
-  <strong>Skip this section if you used <code>tdx-attest.sh all</code>.</strong> These are the individual commands for when you want to run each layer one-by-one (debugging, custom setups, incremental re-runs).
+  <p><strong>Skip this section if you used <code>tdx-attest.sh all</code>.</strong> These are the individual commands for when you want to run each layer one-by-one (debugging, custom setups, incremental re-runs).</p>
 </div>
 </div>
 
@@ -319,7 +359,7 @@ PCESVN STATUS         DATE         WARNING
 <p><strong>Expected result:</strong> all rows PASS (WARN is non-fatal).</p>
 <p><strong>If FAIL:</strong> read the HINT column — it tells you the exact fix (BIOS setting, package to install, service to start).</p>
 <div class="callout info">
-  <strong>Tip:</strong> run <code>sudo ./tdx-attest.sh check --check-platform</code> to include the in-depth Intel PCS/PCCS collateral validation probe.
+  <p><strong>Tip:</strong> run <code>sudo ./tdx-attest.sh check --check-platform</code> to include the in-depth Intel PCS/PCCS collateral validation probe.</p>
 </div>
 <hr>
 </div>
@@ -362,7 +402,72 @@ PCESVN STATUS         DATE         WARNING
   <li><em>Why:</em> Step 8 uses <code>grpcurl</code> to communicate directly with the CoCo-AS gRPC service for quote appraisal.</li>
 </ul>
 <div class="callout info">
-  <strong>Tip — local PCCS / air-gapped environments:</strong> When using a local caching PCCS instead of Intel PCS:  ``<code>bash sudo ./tdx-attest.sh setup-host --collateral pccs --pccs-url http://&lt;PCCS_HOST&gt;:8081 </code>`<code>  For custom or self-signed HTTPS PCCS deployments, pass </code>--pccs-ca /path/to/pccs-root-ca.pem<code> (or </code>--insecure` to bypass TLS verification).
+  <p><strong>Testing — latest packages on top of SLES 16.1:</strong> To test with the newest DCAP/QGS builds instead of the SLES 16.1 repository versions, add the Virtualization:SGX OBS repository before running <code>setup-host</code>:</p>
+  <pre>zypper ar -cf https://download.opensuse.org/repositories/Virtualization:/SGX/16.1/ obs_SGX
+zypper refresh</pre>
+</div>
+<div class="callout info">
+  <p><strong>Tip — deploying a local PCCS server (optional, before air-gapped use):</strong> The <code>suse-sgx-dcap-pccs</code> package provides the PCCS server. It listens on HTTPS port <strong>8081</strong> (loopback only) and caches Intel PCS data locally in a SQLite DB. With the default <code>CachingFillMode: LAZY</code> it fetches <em>missing</em> collateral from Intel PCS on first request (plus a daily refresh at 01:00) — so warm the cache while the host still has internet, then all collateral traffic stays local.</p>
+  <p><strong>One command does it all:</strong></p>
+  <pre>sudo ./tdx-attest.sh setup-host --collateral pccs \
+    --pccs-url https://127.0.0.1:8081 --deploy-pccs</pre>
+  <p><strong>Why <code>--deploy-pccs</code> is needed (and why a bare install is not enough):</strong> The package ships a <em>self-signed</em> server certificate. That is not usable as-is: CoCo-AS verifies the PCCS TLS chain with rustls (<code>rustls-platform-verifier</code>), which rejects self-signed end-entity certs and any chain whose issuer is not a trusted anchor (log error: <code>UnknownIssuer</code>). A working deployment needs:</p>
+  <ol>
+    <li>A <strong>root CA</strong> (<code>/var/lib/pccs/pccs-ca.pem</code>, <code>CA:TRUE</code>; the private key is kept at <code>/var/lib/pccs/pccs-ca.key</code> for re-signing later),</li>
+    <li>A <strong>server leaf</strong> (<code>/var/lib/pccs/file.crt</code>, <code>CA:FALSE</code>, <code>SAN: DNS:127.0.0.1,IP:127.0.0.1</code>, <code>serverAuth</code>) signed by that CA — the PCCS reads it from the <code>HTTPS_file_crt</code>/<code>HTTPS_private_pem</code> config keys,</li>
+    <li>The CA <strong>anchored in the p11-kit system trust store</strong> — this is what rustls/CoCo-AS actually reads (<code>trust anchor /var/lib/pccs/pccs-ca.pem</code> on SUSE, object lands in <code>/etc/pki/trust/</code>),</li>
+    <li>The CA <strong>in the OpenSSL store</strong> for curl, QCNL and the DCAP C libraries — on SLES 16.1 that store (<code>/etc/ssl/certs</code>) is <em>generated from the p11-kit store</em> by <code>update-ca-certificates</code>, so step 3 plus a trust refresh covers it (on SLES 15: <code>update-ca-trust</code>),</li>
+    <li><strong><code>grpc-as</code> restarted after anchoring</strong> — rustls loads the native trust store at process start, so an anchor added later is invisible until the service restarts.</li>
+  </ol>
+  <p><code>--deploy-pccs</code> performs all five steps and finishes with a live <code>openssl s_client</code> verification (<code>Verify return code: 0 (ok)</code>). It is idempotent and <em>repairing</em>: re-running it on a broken deployment (e.g. a self-signed leaf) regenerates the leaf and re-anchors. Audit any deployment at any time with:</p>
+  <pre>./pccs-check.sh local-pccs</pre>
+  <p><strong>Config reference:</strong></p>
+  <ul>
+    <li>Service unit: <code>pccs.service</code> (NOT <code>pccs-server.service</code>)</li>
+    <li>Config template: <code>/usr/libexec/suse-sgx-dcap-pccs/config/upstream.json</code></li>
+    <li>Active config: <code>/usr/libexec/suse-sgx-dcap-pccs/config/default.json</code></li>
+    <li>SQLite cache: <code>/var/lib/pccs/pckcache.db</code></li>
+    <li>Server leaf/key: <code>/var/lib/pccs/file.crt</code> + <code>/var/lib/pccs/private.pem</code></li>
+    <li>Local CA: <code>/var/lib/pccs/pccs-ca.pem</code> (+ key <code>pccs-ca.key</code>)</li>
+    <li>Log: <code>/var/lib/pccs/logs/pccs_server.log</code></li>
+  </ul>
+  <p><strong>Existing PCCS (not deployed by the script):</strong> pass its root CA with <code>--pccs-ca /path/to/pccs-ca.pem</code> — the script anchors it in the p11-kit store and refreshes the OpenSSL store. Note: <code>use_secure_cert: false</code> in the CoCo-AS config does <strong>not</strong> disable outbound PCCS TLS verification — the CA must be anchored either way.</p>
+  <p><strong>Manual deployment (equivalent of --deploy-pccs):</strong></p>
+  <pre>zypper in -y suse-sgx-dcap-pccs
+cp /usr/libexec/suse-sgx-dcap-pccs/config/upstream.json \
+   /usr/libexec/suse-sgx-dcap-pccs/config/default.json
+systemctl enable --now mariadb.service      # soft dependency
+# 1. Root CA (keep the key!)
+openssl genrsa -out /var/lib/pccs/pccs-ca.key 2048
+openssl req -x509 -new -key /var/lib/pccs/pccs-ca.key -sha256 -days 3650 \
+    -subj "/C=US/O=coco_tdx/CN=Local PCCS Root CA" \
+    -addext "basicConstraints=critical,CA:TRUE" \
+    -addext "keyUsage=critical,keyCertSign,cRLSign" \
+    -out /var/lib/pccs/pccs-ca.pem
+# 2. Server leaf signed by that CA (reuse /var/lib/pccs/private.pem)
+openssl req -new -key /var/lib/pccs/private.pem -subj "/CN=127.0.0.1" \
+    -out /tmp/pccs.csr
+printf 'subjectAltName=DNS:127.0.0.1,IP:127.0.0.1\nbasicConstraints=CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n' &gt; /tmp/pccs-ext.cnf
+openssl x509 -req -in /tmp/pccs.csr -CA /var/lib/pccs/pccs-ca.pem \
+    -CAkey /var/lib/pccs/pccs-ca.key -CAcreateserial -days 3650 -sha256 \
+    -extfile /tmp/pccs-ext.cnf -out /var/lib/pccs/file.crt
+chown pccs:pccs /var/lib/pccs/file.crt &amp;&amp; chmod 644 /var/lib/pccs/file.crt
+# 3. Anchor in p11-kit (rustls/CoCo-AS), then regenerate the OpenSSL
+#    store (curl/QCNL/DCAP) from it:
+trust anchor /var/lib/pccs/pccs-ca.pem
+update-ca-certificates   # SLES 16.1 (Debian-style ca-certificates)
+#    SLES 15: run update-ca-trust instead
+# 4. Restart both services (order matters: pccs first, then grpc-as)
+systemctl restart pccs.service
+systemctl restart grpc-as.service
+# 5. Verify
+echo | openssl s_client -connect 127.0.0.1:8081 -CAfile /var/lib/pccs/pccs-ca.pem 2&gt;/dev/null | grep "Verify return code"
+#    -&gt; "Verify return code: 0 (ok)"</pre>
+</div>
+<div class="callout info">
+  <p><strong>Tip — local PCCS / air-gapped environments:</strong> When using a local caching PCCS instead of Intel PCS:</p>
+  <pre>sudo ./tdx-attest.sh setup-host --collateral pccs --pccs-url https://&lt;PCCS_HOST&gt;:8081 --pccs-ca /path/to/pccs-ca.pem</pre>
+  <p>For a PCCS deployed by this script, <code>--pccs-url https://127.0.0.1:8081 --deploy-pccs</code> (see above).</p>
 </div>
 <p class="caption"><strong>Verify:</strong></p>
 <pre>rpm -qa | grep -Ei 'dcap|sgx|qpl'        # packages present
@@ -497,7 +602,7 @@ id qemu | grep qgsd                       # qemu in qgsd group</pre>
 <pre>systemctl is-active grpc-as kbs rvps           # all active
 ss -tln | grep -E '3000|8080'                  # ports listening</pre>
 <div class="callout info">
-  <strong>Note — lab vs production:</strong> this setup is deliberately a <strong>lab configuration</strong>. Three things are permissive and must be changed for real use: (1) the resource policy is <strong>allow-all</strong> — any attested client can fetch any secret; in production, gate it on real claims (e.g. <code>tdx.report.mrtd</code>). (2) KBS runs with <code>insecure_http</code> + <code>InsecureAllowAll</code> — no TLS, no tenant isolation. (3) Step 9 Method B leaves the EAR token on the host, so anyone holding it can fetch the secret — use the in-guest <code>kbs-client</code> (Method A) for real secret gating.
+  <p><strong>Note — lab vs production:</strong> this setup is deliberately a <strong>lab configuration</strong>. Three things are permissive and must be changed for real use: (1) the resource policy is <strong>allow-all</strong> — any attested client can fetch any secret; in production, gate it on real claims (e.g. <code>tdx.report.mrtd</code>). (2) KBS runs with <code>insecure_http</code> + <code>InsecureAllowAll</code> — no TLS, no tenant isolation. (3) Step 9 Method B leaves the EAR token on the host, so anyone holding it can fetch the secret — use the in-guest <code>kbs-client</code> (Method A) for real secret gating.</p>
 </div>
 <hr>
 </div>
@@ -577,7 +682,7 @@ ss -tln | grep -E '3000|8080'                  # ports listening</pre>
 virsh shutdown &lt;vm&gt;
 sudo ./tdx-attest.sh convert-tdx --convert-vm &lt;vm&gt;</pre>
 <div class="callout info">
-  <strong>Tip:</strong> If <code>--convert-vm</code> is omitted, <code>convert-tdx</code> automatically detects running/available VMs and prompts interactively.
+  <p><strong>Tip:</strong> If <code>--convert-vm</code> is omitted, <code>convert-tdx</code> automatically detects running/available VMs and prompts interactively.</p>
 </div>
 <p><code>convert-tdx</code> edits the domain XML in place (pflash→ROM loader, adds <code>launchSecurity</code> + <code>vsock</code>, disables suspend) using a small Python XML transformer, with automatic backup and rollback. <em>Why Python:</em> bash text munging of XML is fragile; ElementTree parses it properly.</p>
 <p class="caption"><strong>Verify:</strong></p>
@@ -613,7 +718,7 @@ virsh dumpxml tdx-guest | grep -E 'launchSecurity|vsock|loader'</pre>
   <li><em>Why:</em> the guest got DHCP on libvirt's default network; the script needs this IP for SSH.</li>
 </ul>
 <div class="callout info">
-  <strong>Tip — Guest IP auto-detection:</strong> When only one VM is running, subsequent commands (<code>setup-guest</code>, <code>attest</code>, <code>register-rv</code>, <code>secret-get</code>) will auto-detect the guest IP if <code>--guest-ip</code> is omitted.
+  <p><strong>Tip — Guest IP auto-detection:</strong> When only one VM is running, subsequent commands (<code>setup-guest</code>, <code>attest</code>, <code>register-rv</code>, <code>secret-get</code>) will auto-detect the guest IP if <code>--guest-ip</code> is omitted.</p>
 </div>
 <ol>
   <li><strong>If you skipped key injection (fresh disk), inject it now:</strong></li>
@@ -707,7 +812,7 @@ virsh dumpxml tdx-guest | grep -E 'launchSecurity|vsock|loader'</pre>
 <p class="caption"><strong>Command (on the host):</strong></p>
 <pre>sudo ./tdx-attest.sh attest --guest-ip &lt;GUEST_IP&gt; --register-rv</pre>
 <div class="callout info">
-  <strong>Default:</strong> <code>--register-rv</code> is recommended — it enrolls the guest's measurements in RVPS <em>and</em> re-evaluates the same quote, giving a clean <code>ear.status = affirming</code> in one step. See <a href="#enrolling-reference-values-into-rvps">below</a> for details.
+  <p><strong>Default:</strong> <code>--register-rv</code> is recommended — it enrolls the guest's measurements in RVPS <em>and</em> re-evaluates the same quote, giving a clean <code>ear.status = affirming</code> in one step. See <a href="#enrolling-reference-values-into-rvps">below</a> for details.</p>
 </div>
 <p class="caption"><strong>What it does, in order:</strong></p>
 <ol>
@@ -830,7 +935,7 @@ sudo ./tdx-attest.sh secret-set --file /tmp/my-secret --path default/test/secret
 <p class="caption"><strong>Expected output (both):</strong></p>
 <pre>=== SECRET DELIVERY SUCCESS: attestation passed, secret released ===</pre>
 <div class="callout info">
-  <strong>Tip — saving secrets to file:</strong> By default, <code>secret-get</code> prints text secrets to stdout. For binary secrets (or direct persistence), pass <code>--file &lt;DEST_PATH&gt;</code>. In Method A this saves the secret directly to the file inside the guest; in Method B it saves it to the host filesystem.
+  <p><strong>Tip — saving secrets to file:</strong> By default, <code>secret-get</code> prints text secrets to stdout. For binary secrets (or direct persistence), pass <code>--file &lt;DEST_PATH&gt;</code>. In Method A this saves the secret directly to the file inside the guest; in Method B it saves it to the host filesystem.</p>
 </div>
 <hr>
 </div>
@@ -893,31 +998,27 @@ sudo ./tdx-attest.sh secret-set --file /tmp/my-secret --path default/test/secret
 </table>
 <div class="callout warn">
   <span class="tag">Warning</span>
-  <strong>⚠️ Registration still needs internet:</strong> On Xeon 6 / Granite Rapids / Emerald Rapids, Intel does <strong>not</strong> publish PCK certificates until you register the platform. You must do this step <strong>while the host still has internet access</strong>, then go offline. Run <code>sudo ./tdx-attest.sh register-platform --subscription &lt;KEY&gt;</code> before disconnecting.
+  <p><strong>⚠️ Registration still needs internet:</strong> On Xeon 6 / Granite Rapids / Emerald Rapids, Intel does <strong>not</strong> publish PCK certificates until you register the platform. You must do this step <strong>while the host still has internet access</strong>, then go offline. Run <code>sudo ./tdx-attest.sh register-platform --subscription &lt;KEY&gt;</code> before disconnecting.</p>
 </div>
 <h3 id="step-by-step-initial-sync-while-you-still-have-internet">Step-by-step: initial sync (while you still have internet)</h3>
-<h4>1. Install PCCS</h4>
-<pre># From the SLES SGX repo (or download the PCCS package manually)
-sudo zypper install suse-libsgx-dcap-default-qpl
-# PCCS is typically provided as a separate package or tarball
-# Install Node.js if not present:
-sudo zypper install nodejs</pre>
-<h4>2. Start PCCS and sync with Intel PCS</h4>
-<pre># Start PCCS (default port: 8081)
-sudo systemctl start pccs
-# or if using a tarball installation:
-node /opt/intel/pccs/server/app.js --config /opt/intel/pccs/config.json
+<h4>1. Deploy the PCCS server</h4>
+<pre># One command: installs suse-sgx-dcap-pccs, generates the CA + leaf
+# certificate chain, anchors the CA in the trust stores, starts the
+# service and verifies the TLS chain:
+sudo ./tdx-attest.sh setup-host --collateral pccs \
+    --pccs-url https://127.0.0.1:8081 --deploy-pccs</pre>
+<p>(For a PCCS that already exists elsewhere, skip this and pass its root CA with <code>--pccs-ca /path/to/pccs-ca.pem</code> instead — see the Step 2 tip.)</p>
+<h4>2. Warm the PCCS cache</h4>
+<p>The packaged PCCS uses <code>CachingFillMode: LAZY</code>: it fetches collateral from Intel PCS <strong>on first request</strong>, then serves it from the local SQLite cache (<code>/var/lib/pccs/pckcache.db</code>). A daily refresh (<code>RefreshSchedule</code>, default 01:00) keeps it current while online. Warm the cache by running the platform checks against the PCCS:</p>
+<pre># TCB status via the local PCCS (not Intel PCS):
+./pccs-check.sh tcb --tdx --pccs-url https://127.0.0.1:8081
 
-# Verify it's running:
-curl -sI http://localhost:8081/
-# Should return HTTP 200</pre>
-<p>PCCS will automatically sync with Intel PCS in the background. Wait for the sync to complete (check PCCS logs for "sync completed" messages).</p>
-<h4>3. Verify PCCS has collateral</h4>
-<pre># Check TCB status via PCCS (not Intel PCS):
-sudo ./pccs-check.sh tcb --tdx --pccs-url http://localhost:8081
+# PCK certificate availability:
+./pccs-check.sh pckcert --auto --tdx --pccs-url https://127.0.0.1:8081
 
-# Check PCK certificate availability:
-sudo ./pccs-check.sh pckcert --auto --tdx --pccs-url http://localhost:8081</pre>
+# Full audit: service, cert chain, trust stores, TLS handshake:
+./pccs-check.sh local-pccs</pre>
+<p>Verify in the PCCS log that the upstream fetches happened and the data was cached: <code>grep -E "trustedservices|INSERT" /var/lib/pccs/logs/pccs_server.log</code>.</p>
 <h4>4. Register your platform (if needed)</h4>
 <pre># MUST be done while still connected to Intel PCS:
 sudo ./tdx-attest.sh register-platform --subscription "YOUR_PRIMARY_KEY"</pre>
@@ -925,49 +1026,54 @@ sudo ./tdx-attest.sh register-platform --subscription "YOUR_PRIMARY_KEY"</pre>
 <h4>5. Disconnect the host from the internet</h4>
 <h4>6. Run the full setup with <code>--collateral pccs</code></h4>
 <pre># All host setup commands now use --collateral pccs:
-sudo ./tdx-attest.sh check --check-platform --collateral pccs --pccs-url http://&lt;PCCS_HOST&gt;:8081
-sudo ./tdx-attest.sh setup-host --collateral pccs --pccs-url http://&lt;PCCS_HOST&gt;:8081
-sudo ./tdx-attest.sh setup-qgs --collateral pccs --pccs-url http://&lt;PCCS_HOST&gt;:8081
-sudo ./tdx-attest.sh setup-trustee --collateral pccs --pccs-url http://&lt;PCCS_HOST&gt;:8081
-sudo ./tdx-attest.sh setup-vm --guest-iso /path/to/SLE-16.1.iso --collateral pccs --pccs-url http://&lt;PCCS_HOST&gt;:8081</pre>
+sudo ./tdx-attest.sh check --check-platform --collateral pccs --pccs-url https://&lt;PCCS_HOST&gt;:8081
+sudo ./tdx-attest.sh setup-host --collateral pccs --pccs-url https://&lt;PCCS_HOST&gt;:8081
+sudo ./tdx-attest.sh setup-qgs --collateral pccs --pccs-url https://&lt;PCCS_HOST&gt;:8081
+sudo ./tdx-attest.sh setup-trustee --collateral pccs --pccs-url https://&lt;PCCS_HOST&gt;:8081
+sudo ./tdx-attest.sh setup-vm --guest-iso /path/to/SLE-16.1.iso --collateral pccs --pccs-url https://&lt;PCCS_HOST&gt;:8081</pre>
 <div class="callout info">
   <span class="tag">Note</span>
-  The <code>--collateral pccs --pccs-url</code> flags are propagated to <code>setup-host</code> (which writes QCNL config pointing at PCCS) and to <code>setup-trustee</code> (which configures CoCo-AS to read from PCCS). <code>setup-qgs</code> and <code>setup-vm</code> don't directly use the flag but benefit from the QCNL config written by <code>setup-host</code>.
+  <p>The <code>--collateral pccs --pccs-url</code> flags are propagated to <code>setup-host</code> (which writes QCNL config pointing at PCCS) and to <code>setup-trustee</code> (which configures CoCo-AS to read from PCCS). <code>setup-qgs</code> and <code>setup-vm</code> don't directly use the flag but benefit from the QCNL config written by <code>setup-host</code>.</p>
 </div>
 <h4>7. Complete the remaining steps (6–11) as usual</h4>
 <p>Steps 6–11 (guest OS install, guest setup, attestation, secret delivery, verify, cleanup) are <strong>identical</strong> to the online flow. The only difference is that quote verification reads collateral from PCCS instead of Intel PCS.</p>
-<h3 id="self-signed--private-ca-for-pccs">Self-signed / private CA for PCCS</h3>
-<p>If your PCCS uses a self-signed or private root CA:</p>
-<pre># Point setup-host at the CA certificate:
-sudo ./tdx-attest.sh setup-host \
+<h3 id="private-ca-for-an-existing-pccs">Private CA for an existing PCCS</h3>
+<p>If your PCCS is deployed outside of this script and uses a private root CA, the CA must be trusted by <strong>both</strong> consumers before attestation works:</p>
+<ul>
+  <li>the <strong>p11-kit system trust store</strong> — read by CoCo-AS (rustls);</li>
+  <li>the <strong>OpenSSL store</strong> — read by curl, QCNL and the DCAP C libraries (on SLES 16.1 it is generated from the p11-kit store by <code>update-ca-certificates</code>).</li>
+</ul>
+<p><code>--pccs-ca</code> handles both (and is idempotent):</p>
+<pre>sudo ./tdx-attest.sh setup-host \
   --collateral pccs \
   --pccs-url https://&lt;PCCS_HOST&gt;:8081 \
-  --pccs-ca /path/to/pccs-root-ca.pem
-
-# Or bypass TLS verification (lab use only):
-sudo ./tdx-attest.sh setup-host \
-  --collateral pccs \
-  --pccs-url https://&lt;PCCS_HOST&gt;:8081 \
-  --insecure</pre>
+  --pccs-ca /path/to/pccs-ca.pem</pre>
+<p>After anchoring a new CA, <strong>restart <code>grpc-as</code></strong> — rustls loads the native trust store at process start. Then verify with <code>openssl s_client -connect &lt;host&gt;:8081 -CAfile &lt;ca.pem&gt;</code> (expect <code>Verify return code: 0 (ok)</code>). <code>./pccs-check.sh local-pccs</code> does the same plus more, but only for a PCCS on the <strong>same host</strong> (it audits the local <code>/var/lib/pccs</code> deployment).</p>
+<div class="callout info">
+  <span class="tag">Note</span>
+  <p>setting <code>use_secure_cert: false</code> in the CoCo-AS config does <strong>not</strong> disable outbound PCCS TLS verification — the CA must be anchored either way. <code>--insecure</code> only affects the QCNL config (QGS-side), not CoCo-AS.</p>
+</div>
 <h3 id="troubleshooting-air-gapped-setups">Troubleshooting air-gapped setups</h3>
 <table>
   <tr><th>Symptom</th><th>Cause</th><th>Fix</th></tr>
-  <tr><td><code>qgs</code> logs: "No certificate data for this platform"</td><td>PCCS hasn't synced yet, or platform not registered</td><td>Wait for PCCS sync; run <code>register-platform</code> while online</td></tr>
-  <tr><td><code>curl http://&lt;PCCS_HOST&gt;:8081/</code> fails</td><td>PCCS not running or wrong port</td><td><code>systemctl status pccs</code>; default port is 8081</td></tr>
-  <tr><td>TCB status shows "OutOfDate"</td><td>PCCS cache is stale</td><td>Re-sync PCCS with Intel PCS (requires temporary internet)</td></tr>
+  <tr><td>CoCo-AS log: <code>rustls_platform_verifier … UnknownIssuer</code></td><td>PCCS server cert is not signed by a CA anchored in the p11-kit store (e.g. self-signed leaf, or anchor added after <code>grpc-as</code> started)</td><td><code>./pccs-check.sh local-pccs</code> pinpoints the broken link; re-run <code>setup-host --collateral pccs --pccs-url https://127.0.0.1:8081 --deploy-pccs</code>, then restart <code>grpc-as</code></td></tr>
+  <tr><td>CoCo-AS log: <code>CaUsedAsEndEntity</code></td><td>The PCCS cert is a CA cert (CA:TRUE) used as the end-entity</td><td>Re-issue the leaf with <code>CA:FALSE</code> + SAN (<code>--deploy-pccs</code> does this)</td></tr>
+  <tr><td><code>qgs</code> logs: "No certificate data for this platform"</td><td>PCCS cache empty for this FMSPC, or platform not registered</td><td>Warm the cache while online (<code>pccs-check.sh tcb --tdx --pccs-url …</code>); run <code>register-platform</code> while online</td></tr>
+  <tr><td><code>curl https://&lt;PCCS_HOST&gt;:8081/…</code> fails with a TLS error</td><td>PCCS not running, wrong port, or CA missing from the OpenSSL store (<code>update-ca-certificates</code> / <code>update-ca-trust</code> not run after <code>trust anchor</code>)</td><td><code>systemctl status pccs.service</code> (default port 8081); <code>./pccs-check.sh local-pccs</code> section 4</td></tr>
+  <tr><td>TCB status shows "OutOfDate"</td><td>PCCS cache is stale</td><td>Temporarily restore internet and let the daily refresh (or a service restart) re-sync</td></tr>
   <tr><td><code>check-platform</code> returns 404</td><td>Platform not registered with Intel</td><td>Must register while online (see above)</td></tr>
   <tr><td>QGS fails with <code>0xe011</code></td><td>PCCS unreachable or misconfigured QCNL</td><td>Verify <code>cat /run/dcap/qcnl.conf</code> points at PCCS</td></tr>
 </table>
 <h3 id="pccs-maintenance-after-initial-sync">PCCS maintenance (after initial sync)</h3>
-<p>PCCS caches are <strong>not automatically updated</strong> in air-gapped mode. To refresh:</p>
-<pre># Temporarily restore internet, sync, then disconnect again:
-sudo pccs-sync --url https://api.trustedservices.intel.com/tdx/certification/v4/tcb
-
-# Or manually download updated collateral and import into PCCS:
-# (see Intel PCCS documentation for the import procedure)</pre>
-<div class="callout info">
-  <strong>Recommendation:</strong> Set up a periodic sync schedule (e.g., weekly cron job on a host that has intermittent internet access) to keep PCCS collateral up-to-date with the latest TCB levels and CVE advisories.
-</div>
+<p>The PCCS refreshes its cache automatically <strong>while it can reach the upstream</strong> (Intel PCS): lazy fill on first request plus the daily <code>RefreshSchedule</code> (default <code>0 0 1 * * *</code>, i.e. 01:00). In air-gapped mode the cache is frozen at the last sync — TCB levels and CRLs go stale over time, which eventually shows up as <code>OutOfDate</code> TCB status.</p>
+<p>To refresh an air-gapped PCCS:</p>
+<ol>
+  <li>Temporarily restore internet access,</li>
+  <li>Restart the service (triggers a re-sync of the cached entries): <code>sudo systemctl restart pccs.service</code>,</li>
+  <li>Verify the new data in the log (<code>grep trustedservices /var/lib/pccs/logs/pccs_server.log</code>) and the cache (<code>sqlite3 /var/lib/pccs/pckcache.db 'SELECT COUNT(*) FROM fmspc_tcbs;'</code>),</li>
+  <li>Disconnect again.</li>
+</ol>
+<p>To change the refresh cadence while online, edit <code>RefreshSchedule</code> in <code>/usr/libexec/suse-sgx-dcap-pccs/config/default.json</code> (cron syntax) and restart <code>pccs.service</code>.</p>
 <hr>
 </div>
 
@@ -1010,7 +1116,7 @@ sudo pccs-sync --url https://api.trustedservices.intel.com/tdx/certification/v4/
   <tr><td><code>trustee.service</code> reports <code>inactive</code> / condition failed</td><td>The monolithic <code>trustee.service</code> is intentionally disabled in favor of individual modular units</td><td>Expected behavior. Verify the active modular services: <code>systemctl is-active grpc-as kbs rvps qgsd</code></td></tr>
   <tr><td>Guest kbs-client missing or lacks TDX attester</td><td><code>trustee</code> package too old (&lt; 0.21)</td><td>Install/upgrade the <code>trustee</code> package from the SGX repo, then re-run <code>sudo ./tdx-attest.sh setup-guest --guest-ip &lt;GUEST_IP&gt;</code></td></tr>
   <tr><td>Guest can't reach KBS (secret-get times out)</td><td>Host firewall blocks 8080, wrong guest IP, or libvirt NAT issue</td><td>From the guest: <code>curl -sI http://&lt;HOST_IP&gt;:8080</code> — check the host firewall (<code>sudo firewall-cmd --list-ports</code>) and re-fetch the IP with <code>virsh net-dhcp-leases default</code></td></tr>
-  <tr><td>Local PCCS reports TLS certificate errors</td><td>Self-signed or private root CA not trusted</td><td>Pass <code>--pccs-ca /path/to/pccs-ca.pem</code> to <code>setup-host</code> or supply <code>--insecure</code></td></tr>
+  <tr><td>CoCo-AS log: <code>rustls_platform_verifier … UnknownIssuer</code> / local PCCS reports TLS certificate errors</td><td>PCCS server cert is self-signed (not signed by an anchored CA), the CA is missing from the p11-kit store, or <code>grpc-as</code> started before the CA was anchored</td><td>Run <code>./pccs-check.sh local-pccs</code> (audits service, cert chain, both trust stores, live TLS); fix with <code>sudo ./tdx-attest.sh setup-host --collateral pccs --pccs-url https://127.0.0.1:8081 --deploy-pccs</code>, then <code>systemctl restart grpc-as</code>. For an existing PCCS: pass its root CA via <code>--pccs-ca</code></td></tr>
   <tr><td><code>grpcurl: command not found</code></td><td>Auto-installed grpcurl not in PATH</td><td>The script installs it to <code>/usr/local/bin</code> (root) or <code>~/.local/bin</code> — check <code>echo $PATH</code>, or re-run <code>attest</code> as root so it lands in <code>/usr/local/bin</code></td></tr>
   <tr><td>Quotes work, then break after host reboot</td><td><code>/run/dcap/qcnl.conf</code> wiped (tmpfs)</td><td><code>systemctl status qgsd-setup.service</code> — it should restore it</td></tr>
 </table>
@@ -1018,7 +1124,7 @@ sudo pccs-sync --url https://api.trustedservices.intel.com/tdx/certification/v4/
 <pre>sudo ./tdx-attest.sh &lt;command&gt; -d</pre>
 <div class="callout info">
   <span class="tag">Note</span>
-  options always come <strong>after</strong> the command — <code>tdx-attest.sh -d check</code> is rejected with <code>Unknown option: check</code>.
+  <p>options always come <strong>after</strong> the command — <code>tdx-attest.sh -d check</code> is rejected with <code>Unknown option: check</code>.</p>
 </div>
 <hr>
 <h2 id="acronym-glossary">Acronym Glossary</h2>

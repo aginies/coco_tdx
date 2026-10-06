@@ -3,6 +3,30 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.3.0] - 2026-10-06
+
+### Added
+- **Step 0 — Install packages from openSUSE Factory (latest release):** new
+  first step in the guide — adds the `Virtualization:SGX` Factory
+  (Tumbleweed) repository and installs the DCAP/QGS/Trustee stack from it.
+  Factory is now the recommended package source for the setup (the SLES
+  16.1 repositories lag behind); the setup steps only install what is
+  missing (`rpm -q` first), so pre-installing from Factory makes their
+  package installs no-ops. Documented in the Quick Start, the step table,
+  and the one-shot section.
+
+### Fixed
+- `convert_doc.py`: blockquotes containing fenced code blocks or lists were
+  collapsed into a single garbled inline string in `README.html` (the
+  Step 2 "Tip — deploying a local PCCS server" callout was the most
+  visible victim). `flush_quote()` now renders the quote's inner content
+  block-level (paragraphs, `<pre>` code blocks, ordered/unordered lists)
+  inside the callout; `Note`/`Warning` tag handling is unchanged.
+
+### Changed
+- `README.html` regenerated from the updated `README.md` (Step 0 section +
+  fixed callout rendering).
+
 ## [1.2.0] - 2026-10-01
 
 ### Added

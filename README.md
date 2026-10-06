@@ -1,6 +1,6 @@
 # Intel TDX Attestation — Step-by-Step Guide
 
-Version 1.2.0
+Version 1.3.0
 
 A guided walkthrough of how to set up and run Intel TDX attestation using
 `tdx-attest.sh`. The installation layer is distribution-pluggable (`lib/distros/`),
@@ -21,6 +21,10 @@ The whole process has two sides:
 
 **Goal in one sentence:** prove to a remote verifier that the guest is a genuine,
 untampered TDX Trust Domain, and only then hand it a secret.
+
+> **Step 0 (once per host, before anything else):** install the packages
+> from openSUSE Factory — see
+> [Step 0](#step-0--install-packages-from-opensuse-factory-latest-release).
 
 **The happy path (11 commands):**
 
@@ -99,7 +103,7 @@ the diagrams below are rendered as SVG so they survive HTML conversion.
 | I want to… | Use this |
 | --- | --- |
 | Get everything running in one shot | `./tdx-attest.sh all --guest-iso …` → [jump to Step 6](#step-6--install-the-guest-os-manual) |
-| Understand each layer individually | [Steps 1–5](#one-shot-setup-tdx-attestsh-all) below |
+| Understand each layer individually | [Steps 0–5](#one-shot-setup-tdx-attestsh-all) below |
 | Debug a broken setup | [Troubleshooting](#troubleshooting-map) |
 | Only check if my platform works | `./pccs-check.sh check --auto --tdx` |
 | Run in an air-gapped / offline environment | `--collateral pccs --pccs-url …` |
@@ -110,6 +114,7 @@ the diagrams below are rendered as SVG so they survive HTML conversion.
 
 | Step | Changes on disk? | Changes network? | Requires reboot? | Can be skipped? |
 | ------ | --- | --- | --- | --- |
+| [0. Install packages from openSUSE Factory (latest release)](#step-0--install-packages-from-opensuse-factory-latest-release) | Yes (packages) | Yes (new repo) | No | Only if already done |
 | [1. Check host capabilities](#step-1--check-host-capabilities) | No | No | No | No (safety gate) |
 | [2. setup-host (DCAP stack)](#step-2--set-up-the-host-dcap-stack) | Yes (packages, QCNL config) | No | No | Only if already done |
 | [3. setup-qgs (quote signing)](#step-3--set-up-qgs-quote-signing) | Yes (unit files, socket) | No | No | Only if already done |
@@ -147,7 +152,7 @@ This gives you the full history, all branches, and the ability to update with
 **Option 2 — Download a specific release tarball:**
 
 ```bash
-VERSION="1.2.0"
+VERSION="1.3.0"
 curl -LO "https://github.com/aginies/coco_tdx/releases/download/v${VERSION}/coco_tdx-${VERSION}.tar.gz"
 tar xzf coco_tdx-${VERSION}.tar.gz
 cd coco_tdx-${VERSION}
@@ -160,9 +165,9 @@ and documentation — ready to use without Git.
 
 ```bash
 # Download a specific tag without cloning the full repo
-curl -LO "https://github.com/aginies/coco_tdx/archive/refs/tags/v1.2.0.tar.gz"
-tar xzf v1.2.0.tar.gz
-cd coco_tdx-1.2.0
+curl -LO "https://github.com/aginies/coco_tdx/archive/refs/tags/v1.3.0.tar.gz"
+tar xzf v1.3.0.tar.gz
+cd coco_tdx-1.3.0
 ```
 
 ---
@@ -330,7 +335,54 @@ Should return HTTP 200 and show enclave identity `TD_QE` with `isvprodid: 2`.
 
 ---
 
+## Step 0 — Install packages from openSUSE Factory (latest release)
+
+Factory (the Tumbleweed target of the `Virtualization:SGX` OBS project)
+always carries the newest builds — DCAP, QGS, and Trustee ≥ 0.21 (the
+`kbs-client` with the TDX attester that Step 7 requires). The SLES 16.1
+repositories lag behind, so from now on Factory is the package source for
+this setup: installing from Factory first guarantees every component comes
+from the same recent source. The setup steps below only install what is
+missing (`rpm -q` first), so this makes their package installs no-ops —
+nothing is downgraded or duplicated.
+
+**Command:**
+
+```bash
+# 1. Add the openSUSE Factory repository (Virtualization:SGX project)
+sudo zypper ar -cf https://download.opensuse.org/repositories/Virtualization:/SGX/openSUSE_Tumbleweed/ obs_SGX_factory
+sudo zypper refresh
+
+# 2. Install the attestation stack from Factory
+sudo zypper in -y \
+    suse-libsgx-dcap-default-qpl libdcap_quoteprov1 libsgx_dcap_quoteverify1 \
+    suse-libsgx-dcap-quoteverify-devel \
+    suse-tdx-qgs \
+    trustee libtdx_attest1 libsgx_tdx_logic1 suse-libtdx-attest-devel \
+    grpcurl
+
+# Optional — only for a local PCCS (Step 12 / air-gapped):
+# sudo zypper in -y suse-sgx-dcap-pccs
+```
+
+**Note:** the virtualization packages (`qemu`, `libvirt-*`, the TDX OVMF
+firmware) are **not** in this repository — they come from the host's base
+repositories and are handled by the later steps. The guest's own packages
+are installed by `setup-guest` (Step 7) from the guest's repositories.
+
+**Verify:**
+
+```bash
+zypper lr -t | grep -i factory                            # repo enabled
+rpm -qa | grep -Ei 'dcap|sgx|qpl|trustee|tdx-qgs|grpcurl' # packages present
+```
+
+---
+
 ## One-shot setup: `tdx-attest.sh all`
+
+**Run [Step 0](#step-0--install-packages-from-opensuse-factory-latest-release) first** —
+`all` does not add the Factory repository for you.
 
 Instead of running Steps 1–5 one by one, a single command chains them:
 
@@ -351,7 +403,7 @@ host-side configuration.
 
 `all` stops at VM start: the manual guest OS install (Step 6) and everything
 after it (Steps 7–9) still have to be done by hand. **If you used `all`, skip
-straight to Step 6** — Steps 1–5 below are only for running things
+straight to Step 6** — Steps 0–5 below are only for running things
 individually.
 
 ---
