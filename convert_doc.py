@@ -84,7 +84,9 @@ def convert_md_to_html(md_path, html_path):
                 if line.startswith("## "):
                         title = line[3:].strip()
                         s_id = slugify(title)
-                        if "Prerequisites" in title:
+                        if "Source Code" in title:
+                                toc_items.append((s_id, "•", "Source Code"))
+                        elif "Prerequisites" in title:
                                 toc_items.append((s_id, "•", "Prerequisites"))
                         elif "Platform Validation" in title:
                                 toc_items.append((s_id, "•", "Platform Validation"))

@@ -17,18 +17,70 @@ The whole process has two sides:
 
 ---
 
+## Source Code
+
+The source code for these scripts is hosted on GitHub:
+
+- **Repository:** [https://github.com/aginies/coco_tdx](https://github.com/aginies/coco_tdx)
+- **Tarball:** [https://github.com/aginies/coco_tdx/releases](https://github.com/aginies/coco_tdx/releases) (when available)
+
+### Getting the scripts
+
+**Option 1 — Clone the repository (recommended for development or latest changes):**
+
+```bash
+git clone https://github.com/aginies/coco_tdx.git
+cd coco_tdx
+```
+
+This gives you the full history, all branches, and the ability to update with
+`git pull`.
+
+**Option 2 — Download a specific release tarball:**
+
+```bash
+VERSION="1.3.1"
+curl -LO "https://github.com/aginies/coco_tdx/releases/download/v${VERSION}/coco_tdx-${VERSION}.tar.gz"
+tar xzf coco_tdx-${VERSION}.tar.gz
+cd coco_tdx-${VERSION}
+```
+
+The tarball contains a versioned subdirectory with all scripts, the library,
+and documentation — ready to use without Git.
+
+**Option 3 — Download a single branch or tag:**
+
+```bash
+# Download a specific tag without cloning the full repo
+curl -LO "https://github.com/aginies/coco_tdx/archive/refs/tags/v1.3.1.tar.gz"
+tar xzf v1.3.1.tar.gz
+cd coco_tdx-1.3.1
+```
+
+---
+
 ## Quick Start — 11 commands on a ready host
 
 **Goal in one sentence:** prove to a remote verifier that the guest is a genuine,
 untampered TDX Trust Domain, and only then hand it a secret.
 
-> **Step 0 (once per host, before anything else):** install the packages
-> from openSUSE Factory — see
-> [Step 0](#step-0--install-packages-from-opensuse-factory-latest-release).
+> **Before running the scripts:**
+>
+> 1. **Get the source code:** clone or download the repository to get `tdx-attest.sh` — see [Source Code](#source-code):
+>    ```bash
+>    git clone https://github.com/aginies/coco_tdx.git
+>    cd coco_tdx
+>    ```
+> 2. **Step 0 (once per host, before anything else):** install the packages
+>    from openSUSE Factory — see
+>    [Step 0](#step-0--install-packages-from-opensuse-factory-latest-release).
 
 **The happy path (11 commands):**
 
 ```bash
+# 0. Get the source code (if not already done)
+git clone https://github.com/aginies/coco_tdx.git && cd coco_tdx
+
 # 1. Host preparation & platform check
 sudo ./tdx-attest.sh check --check-platform
 # If platform is unregistered (HTTP 404 on Xeon 6 / Scalable platforms):
@@ -127,48 +179,6 @@ the diagrams below are rendered as SVG so they survive HTML conversion.
 | [10. verify (consistency check)](#step-10--verify-everything-is-consistent-any-time) | No | No | No | **Recommended anytime** |
 | [11. clean (cleanup)](#step-11--cleanup-when-done) | Yes (destroys VM) | No | No | Only when done |
 | [12. Air-gapped / offline setup](#step-12--air-gapped--offline-setup-optional) | Yes (PCCS, QCNL) | Yes (local PCCS) | No | **Yes** (only for offline hosts) |
-
----
-
-## Source Code
-
-The source code for these scripts is hosted on GitHub:
-
-- **Repository:** [https://github.com/aginies/coco_tdx](https://github.com/aginies/coco_tdx)
-- **Tarball:** [https://github.com/aginies/coco_tdx/releases](https://github.com/aginies/coco_tdx/releases) (when available)
-
-### Getting the scripts
-
-**Option 1 — Clone the repository (recommended for development or latest changes):**
-
-```bash
-git clone https://github.com/aginies/coco_tdx.git
-cd coco_tdx
-```
-
-This gives you the full history, all branches, and the ability to update with
-`git pull`.
-
-**Option 2 — Download a specific release tarball:**
-
-```bash
-VERSION="1.3.1"
-curl -LO "https://github.com/aginies/coco_tdx/releases/download/v${VERSION}/coco_tdx-${VERSION}.tar.gz"
-tar xzf coco_tdx-${VERSION}.tar.gz
-cd coco_tdx-${VERSION}
-```
-
-The tarball contains a versioned subdirectory with all scripts, the library,
-and documentation — ready to use without Git.
-
-**Option 3 — Download a single branch or tag:**
-
-```bash
-# Download a specific tag without cloning the full repo
-curl -LO "https://github.com/aginies/coco_tdx/archive/refs/tags/v1.3.1.tar.gz"
-tar xzf v1.3.1.tar.gz
-cd coco_tdx-1.3.1
-```
 
 ---
 
