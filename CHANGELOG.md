@@ -3,6 +3,20 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.3.1] - 2026-11-17
+
+### Fixed
+- **Remove video device for secure TDX VMs:** secure VMs (TDs) have no video
+  device; the installer and guest operate over serial console (`ttyS0`).
+  `setup-vm.sh` now avoids setting video devices for secure VMs (omits
+  `--video` from `virt-install`, excludes `<video>` from generated domain
+  XML), while retaining `virtio` video for non-TDX test VMs.
+- **Convert to TDX strips video:** `tools/patch_vm_xml.py` now strips all
+  `<video>` elements when converting an existing domain XML to TDX, and
+  `cmd_convert_tdx` verifies the absence of `<video>` devices.
+- **License header:** updated license copyright attribution to SUSE in
+  `lib/license.sh` and `tdx-attest.sh`.
+
 ## [1.3.0] - 2026-10-06
 
 ### Added
