@@ -23,8 +23,9 @@ Two modes:
 2. convert-tdx mode (--rom-loader OVMF_BIN): converts an existing
    (non-TDX) VM's XML (virsh dumpxml) in place: replaces the pflash loader
    with a stateless ROM loader, removes nvram/memoryBacking/ioapic, adds
-   launchSecurity + vsock, and disables suspend-to-mem/disk. All other
-   elements (disk, network, graphics, video, UUID, MAC, ...) are preserved.
+   launchSecurity + vsock, disables suspend-to-mem/disk, and removes video.
+   All other elements (disk, network, graphics, UUID, MAC, ...) are
+   preserved.
 
    This is called from setup-vm.sh (edit_vm_xml_tdx, convert-tdx command).
 
@@ -109,11 +110,18 @@ def disable_suspend(root, devices):
         el.set("enabled", "no")
 
 
+def remove_video(devices):
+    """Remove <video> elements from <devices> (TDX secure VMs have no video)."""
+    if devices is not None:
+        for video in devices.findall("video"):
+            devices.remove(video)
+
+
 def patch_convert_tdx(root, rom_loader, qgs_socket):
     """Convert an existing (non-TDX) VM's XML in place to TDX.
 
     Changes: loader pflash->rom (stateless), removes nvram/memoryBacking/
-    ioapic, adds launchSecurity + vsock, disables suspend.
+    ioapic, adds launchSecurity + vsock, disables suspend, removes video.
     """
     os_el = root.find("os")
     if os_el is not None:
@@ -149,6 +157,8 @@ def patch_convert_tdx(root, rom_loader, qgs_socket):
     add_vsock(devices, before_memballoon=True)
     # 8. <pm>: TDX cannot hibernate
     disable_suspend(root, devices)
+    # 9. Remove <video> (TDX secure VMs have no video device)
+    remove_video(devices)
 
 
 def patch_virt_install(root, qgs_socket, mem_hard_limit):
@@ -178,7 +188,10 @@ def patch_virt_install(root, qgs_socket, mem_hard_limit):
     devices = root.find("devices")
     add_vsock(devices, before_memballoon=False)
 
-    # 3. memtune hard_limit (firmware + overhead headroom), after currentMemory
+    # 3. video: TDX secure VMs have no video device
+    remove_video(devices)
+
+    # 4. memtune hard_limit (firmware + overhead headroom), after currentMemory
     for mb in root.findall("memtune"):
         root.remove(mb)
     mt = ET.Element("memtune")
@@ -187,7 +200,7 @@ def patch_virt_install(root, qgs_socket, mem_hard_limit):
     idx = next((i for i, c in enumerate(children) if c.tag == "currentMemory"), 1)
     root.insert(idx + 1, mt)
 
-    # 4. resource partition /machine, after vcpu
+    # 5. resource partition /machine, after vcpu
     if root.find("resource") is None:
         res = ET.Element("resource")
         ET.SubElement(res, "partition").text = "/machine"
@@ -195,10 +208,10 @@ def patch_virt_install(root, qgs_socket, mem_hard_limit):
         idx = next((i for i, c in enumerate(children) if c.tag == "vcpu"), 2)
         root.insert(idx + 1, res)
 
-    # 5. pm: TDX cannot hibernate — disable suspend-to-mem/disk, before <devices>
+    # 6. pm: TDX cannot hibernate — disable suspend-to-mem/disk, before <devices>
     disable_suspend(root, devices)
 
-    # 6. qemu:commandline: with <launchSecurity type='tdx'> present, libvirt
+    # 7. qemu:commandline: with <launchSecurity type='tdx'> present, libvirt
     #    itself adds the tdx-guest object + confidential-guest-support machine
     #    flag. The explicit -object/-machine args virt-install left in the
     #    qemu-commandline would duplicate them and break TD init (KVM_TDX_INIT_

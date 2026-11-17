@@ -42,10 +42,9 @@ generate_vm_xml() {
     # TDX firmware and fall back to a non-TDX OVMF, so the guest is not launched
     # as a real TD and the installer never appears.
     #
-    # Video: use virtio (not VGA). The working example uses <video><model
-    # type='virtio'/>. VGA on a TDX TD with the secureboot OVMF does not reliably
-    # bring up a display for the ISO installer; virtio video + serial console is
-    # the proven path.
+    # Video: secure VMs (TDX) have no video device at all. The installer and
+    # guest console operate purely over serial (ttyS0). Regular (non-TDX) VMs
+    # retain virtio video.
 
     local loader_line=""
     local memfd_line=""
@@ -53,6 +52,7 @@ generate_vm_xml() {
     local launchsec_line=""
     local vsock_line=""
     local rng_line=""
+    local video_line=""
     local firmware_attr=""
     local memtune_line=""
     local resource_line=""
@@ -78,6 +78,10 @@ generate_vm_xml() {
         launchsec_line=""
         # No vsock needed for non-TDX (no quote generation)
         vsock_line=""
+        # Non-TDX retains virtio video
+        video_line="    <video>
+      <model type='virtio' heads='1' primary='yes'/>
+    </video>"
         # No TDX-specific rng, use regular
         rng_line="    <rng model='virtio'>
       <backend model='random'>/dev/urandom</backend>
@@ -196,9 +200,7 @@ ${launchsec_line}
     <graphics type='vnc' port='${VNC_PORT}' listen='${VNC_LISTEN:-0.0.0.0}'>
       <listen type='address' address='${VNC_LISTEN:-0.0.0.0}'/>
     </graphics>
-    <video>
-      <model type='virtio' heads='1' primary='yes'/>
-    </video>
+${video_line}
 ${vsock_line}
 ${extra_devices}
     <memballoon model='virtio'/>
@@ -376,11 +378,13 @@ build_virt_install_cmd() {
         --cpu host-passthrough
         --network network=default,model=virtio
         --graphics "vnc,listen=${VNC_LISTEN:-0.0.0.0},port=${VNC_PORT}"
-        --video virtio
         --boot cdrom,hd
         --noautoconsole
         --wait 1
     )
+    if ((VM_NO_TDX)); then
+        cmd+=(--video virtio)
+    fi
     if ((vi_major >= 5)); then
         # virt-install 5.x requires --osinfo. Derive a libosinfo ID from the
         # ISO name when recognizable (and present in this virt-install's list),
@@ -819,9 +823,9 @@ NEXT
 # Edit a libvirt domain XML in-place to add TDX support (convert-tdx path).
 # Delegates to tools/patch_vm_xml.py --rom-loader — the single testable
 # implementation shared with the virt-install path (patch_vm_xml_tdx).
-# Preserves all existing elements (disk, network, graphics, video, UUID, MAC, etc.).
+# Preserves disk, network, graphics, UUID, MAC, etc.; removes video.
 # Changes: loader pflash->rom (stateless), removes nvram/memoryBacking/ioapic,
-# adds launchSecurity + vsock.
+# adds launchSecurity + vsock, disables suspend-to-mem/disk, removes video.
 # Usage: edit_vm_xml_tdx <input_xml> <output_xml> <tdx_ovmf_bin> <qgs_socket>
 edit_vm_xml_tdx() {
     local input_xml="$1" output_xml="$2" ovmf_bin="$3" qgs_socket="$4"
@@ -834,7 +838,7 @@ cmd_convert_tdx() {
     require_cmd virsh python3
     log "=== Converting VM to TDX ==="
     step "Convert an existing (non-TDX) libvirt VM to a TDX Trust Domain in-place" \
-        "Edits the domain XML: pflash->ROM loader, adds launchSecurity+vsock, removes memoryBacking/ioapic, disables suspend-to-mem/disk. Preserves disk, network, MAC, graphics, video, UUID."
+        "Edits the domain XML: pflash->ROM loader, adds launchSecurity+vsock, removes memoryBacking/ioapic, disables suspend-to-mem/disk, removes video. Preserves disk, network, MAC, graphics, UUID."
 
     # Resolve target VM name (mandatory)
     local vm_name="${CONVERT_VM_NAME:-}"
@@ -907,7 +911,7 @@ Shut it down, then re-run:
     # Edit XML
     local tmp_xml
     tmp_xml=$(mktemp /tmp/tdx-convert-XXXXXX.xml)
-    log "Editing VM XML for TDX (preserving disk, network, MAC, graphics, video, UUID)"
+    log "Editing VM XML for TDX (preserving disk, network, MAC, graphics, UUID; removing video)"
     if ! edit_vm_xml_tdx "$backup_path" "$tmp_xml" "$ovmf_bin" "$QGS_SOCKET"; then
         error "XML edit failed. Generated XML kept for inspection: ${tmp_xml}"
         die "TDX conversion failed. Generated XML: ${tmp_xml}"
@@ -940,6 +944,11 @@ Shut it down, then re-run:
         log "VM has suspend-to-mem and suspend-to-disk disabled"
     else
         error "VM missing <pm> suspend-to-mem/suspend-to-disk enabled='no' after conversion. TDX guests must not hibernate."
+    fi
+    if grep -q "<video" <<<"$new_xml"; then
+        error "VM still has <video> device after TDX conversion"
+    else
+        log "VM has no video device"
     fi
 
     # Show diff
