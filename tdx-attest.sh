@@ -265,6 +265,9 @@ Options:
     --dry-run              setup-vm: print the virt-install command, do not run
     --no-tdx               Create VM without TDX launch security (test-only)
     --convert-vm NAME      VM to convert to TDX (convert-tdx, auto-detected)
+    --video MODEL          setup-vm/convert-tdx video device: none, virtio, qxl
+                           (default: ask on a TTY, else none for TDX, virtio
+                           for --no-tdx). TDX guests need authorize_allow_devs=
     --ssh-key PATH         SSH key for guest (default: ${SSH_KEY}, auto-created)
   Guest & KBS:
     --guest-ip IP          Guest IP for ssh (setup-guest, attest, secret-get, ...)
@@ -458,6 +461,11 @@ parse_args() {
             shift
             ;;
         --no-tdx) VM_NO_TDX=1 ;;
+        --video)
+            req_val "$1" "${2:-}"
+            VM_VIDEO="$2"
+            shift
+            ;;
         --convert-vm)
             req_val "$1" "${2:-}"
             CONVERT_VM_NAME="$2"
@@ -480,6 +488,11 @@ parse_args() {
     case "$SECRET_MODE" in
     guest | host) ;;
     *) die "Invalid --mode '${SECRET_MODE}' (must be 'guest' or 'host')" ;;
+    esac
+
+    case "$VM_VIDEO" in
+    "" | none | virtio | qxl) ;;
+    *) die "Invalid --video '${VM_VIDEO}' (must be 'none', 'virtio' or 'qxl')" ;;
     esac
 
     case "$COLLATERAL_MODE" in

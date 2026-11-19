@@ -3,6 +3,22 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+## [1.4.0] - 2026-11-19
+
+### Added
+- **`--video none|virtio|qxl` for `setup-vm` and `convert-tdx`:** choose the
+  guest video device. Without the option, the script asks interactively on a
+  TTY (default `none`); non-interactive runs (`-f`, piped, `--dry-run`) keep
+  the previous defaults (`none` for TDX, `virtio` for `--no-tdx`). When a TDX
+  guest gets a video device, a warning prints the `authorize_allow_devs=`
+  guest kernel parameter needed to enable it (virtio-gpu
+  `pci:0x1af4:0x1050`, QXL `pci:0x1b36:0x0100`). `tools/patch_vm_xml.py`
+  gains a matching `--video` option.
+- **README:** note on enabling video devices in a hardened TDX guest via
+  `authorize_allow_devs=` on the guest kernel command line.
+
 ## [1.3.1] - 2026-11-17
 
 ### Fixed

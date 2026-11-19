@@ -23,7 +23,8 @@ Two modes:
 2. convert-tdx mode (--rom-loader OVMF_BIN): converts an existing
    (non-TDX) VM's XML (virsh dumpxml) in place: replaces the pflash loader
    with a stateless ROM loader, removes nvram/memoryBacking/ioapic, adds
-   launchSecurity + vsock, disables suspend-to-mem/disk, and removes video.
+   launchSecurity + vsock, disables suspend-to-mem/disk, and removes video
+   (or sets it to the model given with --video).
    All other elements (disk, network, graphics, UUID, MAC, ...) are
    preserved.
 
@@ -32,6 +33,10 @@ Two modes:
 Usage:
     patch_vm_xml.py <input_xml> <output_xml> <qgs_socket> <mem_hard_limit_kib>
     patch_vm_xml.py <input_xml> <output_xml> <qgs_socket> --rom-loader OVMF_BIN
+
+    Both modes accept --video none|virtio|qxl (default: none = remove all
+    <video> devices; a TDX guest must allow-list a display device with
+    authorize_allow_devs= on its kernel command line).
 
 Parsing uses defusedxml.ElementTree.fromstring when available (guards
 against entity-expansion attacks) and falls back to the standard library,
@@ -110,18 +115,45 @@ def disable_suspend(root, devices):
         el.set("enabled", "no")
 
 
-def remove_video(devices):
-    """Remove <video> elements from <devices> (TDX secure VMs have no video)."""
-    if devices is not None:
-        for video in devices.findall("video"):
-            devices.remove(video)
+VIDEO_MODELS = ("none", "virtio", "qxl")
 
 
-def patch_convert_tdx(root, rom_loader, qgs_socket):
+def set_video(devices, model="none"):
+    """Set the <video> device in <devices>.
+
+    "none" (default) removes every <video> element: a hardened TDX guest
+    kernel does not authorize display devices unless they are allow-listed
+    with authorize_allow_devs= on the guest kernel command line. "virtio" or
+    "qxl" replaces any existing <video> with a single primary device of that
+    model (the guest then needs authorize_allow_devs=pci:0x1af4:0x1050 for
+    virtio-gpu or pci:0x1b36:0x0100 for QXL).
+    """
+    if devices is None:
+        return
+    for video in devices.findall("video"):
+        devices.remove(video)
+    if model == "none":
+        return
+    video = ET.Element("video")
+    attrs = {"type": model, "heads": "1", "primary": "yes"}
+    if model == "qxl":
+        attrs.update({"ram": "65536", "vram": "65536", "vgamem": "16384"})
+    ET.SubElement(video, "model", attrs)
+    # Keep libvirt's canonical order: <video> right after <graphics>.
+    children = list(devices)
+    idx = next(
+        (i + 1 for i, c in reversed(list(enumerate(children))) if c.tag == "graphics"),
+        len(children),
+    )
+    devices.insert(idx, video)
+
+
+def patch_convert_tdx(root, rom_loader, qgs_socket, video="none"):
     """Convert an existing (non-TDX) VM's XML in place to TDX.
 
     Changes: loader pflash->rom (stateless), removes nvram/memoryBacking/
-    ioapic, adds launchSecurity + vsock, disables suspend, removes video.
+    ioapic, adds launchSecurity + vsock, disables suspend, sets video
+    (removed by default, see set_video).
     """
     os_el = root.find("os")
     if os_el is not None:
@@ -157,11 +189,11 @@ def patch_convert_tdx(root, rom_loader, qgs_socket):
     add_vsock(devices, before_memballoon=True)
     # 8. <pm>: TDX cannot hibernate
     disable_suspend(root, devices)
-    # 9. Remove <video> (TDX secure VMs have no video device)
-    remove_video(devices)
+    # 9. <video>: removed unless a model was requested (see set_video)
+    set_video(devices, video)
 
 
-def patch_virt_install(root, qgs_socket, mem_hard_limit):
+def patch_virt_install(root, qgs_socket, mem_hard_limit, video="none"):
     """Normalize a virt-install --print-xml runtime variant for TDX."""
     # Drop <on_reboot>destroy</on_reboot> from the runtime variant: after the
     # install the guest must reboot into the installed OS, not be destroyed.
@@ -188,8 +220,8 @@ def patch_virt_install(root, qgs_socket, mem_hard_limit):
     devices = root.find("devices")
     add_vsock(devices, before_memballoon=False)
 
-    # 3. video: TDX secure VMs have no video device
-    remove_video(devices)
+    # 3. <video>: removed unless a model was requested (see set_video)
+    set_video(devices, video)
 
     # 4. memtune hard_limit (firmware + overhead headroom), after currentMemory
     for mb in root.findall("memtune"):
@@ -242,10 +274,21 @@ def main():
             sys.exit(2)
         rom_loader = argv[i + 1]
         del argv[i : i + 2]
+    video = "none"
+    if "--video" in argv:
+        i = argv.index("--video")
+        if i + 1 >= len(argv) or argv[i + 1] not in VIDEO_MODELS:
+            print(
+                f"Error: --video requires one of: {', '.join(VIDEO_MODELS)}",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        video = argv[i + 1]
+        del argv[i : i + 2]
     if len(argv) not in (3, 4):
         print(
             f"usage: {sys.argv[0]} <input_xml> <output_xml> <qgs_socket> "
-            f"[mem_hard_limit_kib] [--rom-loader OVMF_BIN]",
+            f"[mem_hard_limit_kib] [--rom-loader OVMF_BIN] [--video none|virtio|qxl]",
             file=sys.stderr,
         )
         sys.exit(2)
@@ -291,9 +334,9 @@ def main():
     ET.register_namespace("", "")
 
     if rom_loader is not None:
-        patch_convert_tdx(root, rom_loader, qgs_socket)
+        patch_convert_tdx(root, rom_loader, qgs_socket, video)
     else:
-        patch_virt_install(root, qgs_socket, mem_hard_limit)
+        patch_virt_install(root, qgs_socket, mem_hard_limit, video)
 
     # Write output XML
     try:

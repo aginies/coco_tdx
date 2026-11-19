@@ -7,7 +7,7 @@
 # shellcheck disable=SC2034,SC2155
 
 readonly SCRIPT_NAME="$(basename "$0")"
-readonly SCRIPT_VERSION="1.3.1"
+readonly SCRIPT_VERSION="1.4.0"
 # SCRIPT_DIR is defined in the main script before sourcing these files.
 
 # Platform check & registration
@@ -41,6 +41,11 @@ VM_CREATOR="auto"
 # setup-vm: print the virt-install command without executing
 DRY_RUN=0
 CONVERT_VM_NAME=""
+# Guest video device (setup-vm / convert-tdx): none, virtio or qxl.
+# Empty = ask interactively (TTY), else default: none for TDX, virtio for
+# --no-tdx. A hardened TDX guest kernel only enables a display device that is
+# allow-listed with authorize_allow_devs= on the guest kernel command line.
+VM_VIDEO=""
 # QGS unix socket (libvirt default). SUSE qgsd listens here.
 QGS_SOCKET="/var/run/tdx-qgs/qgs.socket"
 

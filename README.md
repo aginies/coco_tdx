@@ -1,6 +1,6 @@
 # Intel TDX Attestation — Step-by-Step Guide (Technology Preview SLES16.1)
 
-Version 1.3.1
+Version 1.4.0
 
 A guided walkthrough of how to set up and run Intel TDX attestation using
 `tdx-attest.sh`. The installation layer is distribution-pluggable (`lib/distros/`),
@@ -39,7 +39,7 @@ This gives you the full history, all branches, and the ability to update with
 **Option 2 — Download a specific release tarball:**
 
 ```bash
-VERSION="1.3.1"
+VERSION="1.4.0"
 curl -LO "https://github.com/aginies/coco_tdx/releases/download/v${VERSION}/coco_tdx-${VERSION}.tar.gz"
 tar xzf coco_tdx-${VERSION}.tar.gz
 cd coco_tdx-${VERSION}
@@ -52,9 +52,9 @@ and documentation — ready to use without Git.
 
 ```bash
 # Download a specific tag without cloning the full repo
-curl -LO "https://github.com/aginies/coco_tdx/archive/refs/tags/v1.3.1.tar.gz"
-tar xzf v1.3.1.tar.gz
-cd coco_tdx-1.3.1
+curl -LO "https://github.com/aginies/coco_tdx/archive/refs/tags/v1.4.0.tar.gz"
+tar xzf v1.4.0.tar.gz
+cd coco_tdx-1.4.0
 ```
 
 ---
@@ -832,7 +832,7 @@ sudo ./tdx-attest.sh setup-vm --guest-iso /path/to/SLE-16.1.iso
      `/var/lib/libvirt/boot/<vm>-installer-{kernel,initrd}`, then runs
      `virt-install --name … --memory … --vcpus … --disk … --cpu
      host-passthrough --network network=default,model=virtio --graphics
-     vnc,listen=… --video virtio --boot cdrom,hd <firmware> --qemu-commandline="-object
+     vnc,listen=… [--video virtio|qxl] --boot cdrom,hd <firmware> --qemu-commandline="-object
      tdx-guest,id=tdx -machine confidential-guest-support=tdx" --location <ISO>
      --extra-args console=ttyS0,115200 --print-xml` — i.e. **XML generation
      only, nothing is started**. (On virt-install 5.x the firmware is
@@ -868,7 +868,39 @@ sudo ./tdx-attest.sh setup-vm --guest-iso /path/to/SLE-16.1.iso
    | `<vsock model='virtio'>` | The only channel for the TD to reach QGS for quote signing. |
    | `<pm><suspend-to-mem/disk enabled='no'>` | TDX TDs cannot suspend/hibernate — the saved image would be unmeasured/unencrypted. |
    | (no `<memoryBacking>`, no `<ioapic>`) | libvirt auto-adds memfd backing + split irqchip for TDX; setting them explicitly breaks launch. |
-   | virtio video + serial console | The display path that works for the ISO installer on a TDX TD. |
+   | serial console, no `<video>` (default) | The installer and guest run over `ttyS0`. A video device is added only with `--video virtio\|qxl` (or when chosen at the interactive prompt) — see the note below. |
+
+   > **Note — video devices in a TDX guest:** the hardened TDX guest kernel
+   > only authorizes an allow-list of devices by default, so a display device
+   > (virtio-gpu, QXL) is **not enabled** out of the box (see
+   > [Intel TDX guest hardening — device filter](https://intel.github.io/ccc-linux-guest-hardening-docs/tdx-guest-hardening.html#id8)).
+   > `authorize_allow_devs` is a **guest kernel command-line parameter**; add
+   > it via GRUB (`GRUB_CMDLINE_LINUX` in `/etc/default/grub`, then regenerate
+   > the GRUB config and reboot):
+   >
+   > virtio-gpu:
+   >
+   > ```
+   > authorize_allow_devs=pci:0x1af4:0x1050
+   > ```
+   >
+   > QXL:
+   >
+   > ```
+   > authorize_allow_devs=pci:0x1b36:0x0100
+   > ```
+   >
+   > Both at once:
+   >
+   > ```
+   > authorize_allow_devs=pci:0x1af4:0x1050,pci:0x1b36:0x0100
+   > ```
+   >
+   > **Choosing the video device:** `setup-vm` and `convert-tdx` take
+   > `--video none|virtio|qxl`. Without it, they ask interactively on a TTY
+   > (default `none`); non-interactive runs (`-f`, piped, `--dry-run`) use
+   > `none` for TDX and `virtio` for `--no-tdx`. When a TDX guest gets a video
+   > device, the script prints the matching `authorize_allow_devs=` value.
 
 4. **Generates an SSH key** (`ssh-keygen -t ed25519`) if absent.
    - *Why:* all later steps drive the guest passwordlessly over SSH.
@@ -898,7 +930,8 @@ sudo ./tdx-attest.sh convert-tdx --convert-vm <vm>
 > **Tip:** If `--convert-vm` is omitted, `convert-tdx` automatically detects running/available VMs and prompts interactively.
 
 `convert-tdx` edits the domain XML in place (pflash→ROM loader, adds
-`launchSecurity` + `vsock`, disables suspend) using a small Python XML
+`launchSecurity` + `vsock`, disables suspend, removes `<video>` unless
+`--video virtio|qxl` is given) using a small Python XML
 transformer, with automatic backup and rollback. *Why Python:* bash text
 munging of XML is fragile; ElementTree parses it properly.
 
