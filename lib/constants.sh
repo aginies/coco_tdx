@@ -57,9 +57,13 @@ PCS_URL="${PCS_URL:-https://api.trustedservices.intel.com/sgx/certification/v4/}
 # PCCS (Provisioning Certification Caching Service): a local/regional *cache*
 # of PCS. Method 2 ('--collateral pccs') uses a local caching service.
 # The SLES suse-sgx-dcap-pccs package serves HTTPS only, on 127.0.0.1:8081
-# (see /usr/libexec/suse-sgx-dcap-pccs/config). This is the base URL: QCNL and
-# CoCo-AS append the /sgx|tdx/certification/v4/ API paths themselves.
-PCCS_URL="${PCCS_URL:-https://127.0.0.1:8081}"
+# (see /usr/libexec/suse-sgx-dcap-pccs/config), under the PCS v4 API paths
+# /sgx/certification/v4/ and /tdx/certification/v4/.
+# QCNL and CoCo-AS append the API endpoint name (pckcert, TCBinfo, ...)
+# directly to this URL, so it must be the full API base with a trailing
+# slash. A bare host:port produces a malformed request URL (QCNL CURL error
+# 3 / QPL 0xb003, guest: "Failed to get the quote").
+PCCS_URL="${PCCS_URL:-https://127.0.0.1:8081/sgx/certification/v4/}"
 # Paths used by --deploy-pccs (SLES suse-sgx-dcap-pccs package layout):
 # the server reads its leaf cert/key from the HTTPS_file_crt / HTTPS_private_pem
 # config keys, which point at /var/lib/pccs/file.crt + private.pem.

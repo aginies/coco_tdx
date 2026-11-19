@@ -341,12 +341,22 @@ probe_collateral_url() {
 }
 
 collateral_url() {
+    local url
     if [[ "$COLLATERAL_MODE" == "pccs" ]]; then
         [[ -n "$PCCS_URL" ]] || die "PCCS mode requires a PCCS endpoint (--pccs-url)"
-        echo "$PCCS_URL"
+        url="$PCCS_URL"
     else
-        echo "$PCS_URL"
+        url="$PCS_URL"
     fi
+    # QCNL and CoCo-AS append the API endpoint name (pckcert, TCBinfo, ...)
+    # directly to this URL, so it must end with the PCS v4 API path and a
+    # trailing slash. Normalize a bare base (host:port) so a missing
+    # '/sgx/certification/v4/' cannot produce a malformed request URL
+    # (QCNL CURL error 3 / QPL 0xb003).
+    if [[ "$url" != *"/certification/v4/"* ]]; then
+        url="${url%/}/sgx/certification/v4/"
+    fi
+    echo "$url"
 }
 
 ensure_libvirt() {

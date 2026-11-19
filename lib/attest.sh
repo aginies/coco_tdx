@@ -93,7 +93,13 @@ attest_get_ear_token() {
     require_cmd ssh
 
     log "Generating fresh quote on guest"
-    guest_generate_quote
+    if ! guest_generate_quote; then
+        # The TD report was produced but the QGS round-trip failed. Run the
+        # host-side QGS diagnostics (as setup-guest does) so the failure is
+        # explained instead of left opaque.
+        diagnose_quote_generation
+        return 1
+    fi
 
     log "Fetching quote (base64)"
     local quote_b64
@@ -262,7 +268,9 @@ cmd_register_rv() {
     step "Fetch guest quote and enroll measurements into RVPS" \
         "Fetches a fresh Quote, decodes TDX measurements (mr_td, rtmr_1, rtmr_2, xfam), and registers them into RVPS so EAR appraisal passes."
 
-    attest_get_ear_token
+    if ! attest_get_ear_token; then
+        die "Quote generation or evaluation failed — see diagnostics above."
+    fi
     local token="$EAR_TOKEN"
     local jwt_json=""
     jwt_json=$(jwt_decode_payload "$token") || jwt_json=""
@@ -322,7 +330,9 @@ cmd_attest() {
     step "Send the guest Quote to CoCo-AS and verify the EAR token" \
         "Fetches a fresh Quote over ssh, submits it via grpcurl, then checks Intel PCS verification and appraisal status."
 
-    attest_get_ear_token
+    if ! attest_get_ear_token; then
+        die "Quote generation or evaluation failed — see diagnostics above."
+    fi
     local token="$EAR_TOKEN"
 
     log "Decoding EAR JWT payload"
@@ -488,26 +498,72 @@ guest_generate_quote() {
     return "$rc"
 }
 
-# After a quote-generation failure, inspect the host QGS journal for the PCS
-# "PCK certificate not found" signature and explain the most likely cause.
-# On dev platforms the TDX module's QEID is often not registered in Intel PCS,
-# so QCNL's /pckcert request returns HTTP 404 and QGS cannot build a quote.
-# No query or config change fixes this — the TDX module (or its registration
-# in PCS) must change. Returns 0 if that cause was detected and explained,
-# 1 otherwise.
+# Run the full host-side quote-failure diagnosis: the 6 QGS pre-flight checks
+# (rendered as a PASS/FAIL table) followed by the qgsd journal signature
+# analysis (diagnose_quote_failure). Returns 0 if a known cause was identified
+# in the journal, 1 otherwise.
+diagnose_quote_generation() {
+    # shellcheck disable=SC2034  # CHECK_RESULTS consumed by print_results
+    CHECK_RESULTS=()
+    qgs_preflight_checks
+    print_results
+    diagnose_quote_failure
+}
+
+# After a quote-generation failure, inspect the host QGS journal for known
+# failure signatures and explain the most likely cause:
+#   1. Malformed pccs_url (CURL error 3 / QPL 0xb003): QCNL appends the API
+#      endpoint ('pckcert') directly to pccs_url, so a URL missing the
+#      '/sgx/certification/v4/' path and trailing slash produces a request
+#      like 'https://host:portpckcert?...' that curl rejects.
+#   2. PCK certificate not found (HTTP 404): on dev platforms the TDX
+#      module's QEID is often not registered in Intel PCS.
+#   3. Collateral service unreachable (CURL 5/6/7, DNS failure, refused).
+# Returns 0 if a cause was detected and explained, 1 otherwise.
 diagnose_quote_failure() {
-    local recent qeid
-    recent=$(journalctl -u qgsd --since "10 min ago" --no-pager 2>/dev/null | tail -120 || true)
-    [[ -n "$recent" ]] || return 1
-    grep -qE '\[QCNL\] HTTP status code: 404|No certificate data for this platform' <<<"$recent" || return 1
-    qeid=$(grep -oE 'qeid=[0-9A-Fa-f]{32}' <<<"$recent" | head -1 | cut -d= -f2 || true)
-    warn "Quote failure cause: QGS could not fetch the PCK certificate from PCS (HTTP 404)."
-    warn "PCS holds no PCK certificate for this platform's TDX module${qeid:+ (QEID ${qeid})}."
-    warn "This is the signature of a dev/pre-release TDX module, or a version Intel has not yet ingested into PCS."
-    warn "No query/config change fixes it. To proceed:"
-    warn "  - update the platform TDX module (BIOS/firmware) to a PCS-registered version, or"
-    warn "  - use a local PCCS with manually-provisioned PCK collateral (re-run with --collateral pccs)."
-    return 0
+    local recent full qeid qcnl_url
+    full=$(journalctl -u qgsd --since "10 min ago" --no-pager 2>/dev/null | tail -200 || true)
+    [[ -n "$full" ]] || return 1
+    # Narrow to the last request cycle (QGS logs 'Added a new connection' at
+    # the start of each) so stale errors from earlier cycles don't mask the
+    # current one.
+    recent=$(awk '/Added a new connection/{buf=""} {buf = buf $0 "\n"} END {printf "%s", buf}' <<<"$full")
+    [[ -n "$recent" ]] || recent="$full"
+
+    # 1. Malformed request URL: pccs_url lacks the API path / trailing slash.
+    if grep -qE 'Encountered CURL error: \(3\)|Failed to get quote config. Error code is 0xb003' <<<"$recent"; then
+        qcnl_url=$(grep -oP '"pccs_url"\s*:\s*"\K[^"]+' "$QCNL_PKG_CONF" 2>/dev/null || true)
+        warn "Quote failure cause: QCNL built a malformed request URL (CURL error 3)."
+        warn "QCNL appends the API endpoint ('pckcert') directly to pccs_url, which is currently:"
+        warn "  ${qcnl_url:-<not found in ${QCNL_PKG_CONF}>}"
+        warn "It must be the full PCS v4 API base with a trailing slash, e.g.:"
+        warn "  https://127.0.0.1:8081/sgx/certification/v4/                 (local PCCS)"
+        warn "  https://api.trustedservices.intel.com/sgx/certification/v4/   (global PCS)"
+        warn "Fix: re-run 'setup-host' (rewrites the QCNL config), or edit ${QCNL_PKG_CONF}."
+        return 0
+    fi
+
+    # 2. PCS has no PCK certificate for this platform (HTTP 404).
+    if grep -qE '\[QCNL\] HTTP status code: 404|No certificate data for this platform' <<<"$recent"; then
+        qeid=$(grep -oE 'qeid=[0-9A-Fa-f]{32}' <<<"$recent" | head -1 | cut -d= -f2 || true)
+        warn "Quote failure cause: QGS could not fetch the PCK certificate from PCS (HTTP 404)."
+        warn "PCS holds no PCK certificate for this platform's TDX module${qeid:+ (QEID ${qeid})}."
+        warn "This is the signature of a dev/pre-release TDX module, or a version Intel has not yet ingested into PCS."
+        warn "No query/config change fixes it. To proceed:"
+        warn "  - update the platform TDX module (BIOS/firmware) to a PCS-registered version, or"
+        warn "  - use a local PCCS with manually-provisioned PCK collateral (re-run with --collateral pccs)."
+        return 0
+    fi
+
+    # 3. Collateral service unreachable (service down / no network).
+    if grep -qE 'Encountered CURL error: \([567]\)|Could not resolve host|Connection refused' <<<"$recent"; then
+        warn "Quote failure cause: QCNL could not reach the collateral service."
+        warn "Check pccs_url in ${QCNL_PKG_CONF}; for a local PCCS check 'systemctl status pccs',"
+        warn "for global PCS check outbound HTTPS from the host."
+        return 0
+    fi
+
+    return 1
 }
 
 # Disable suspend/hibernate in the guest. TDX Trust Domains cannot hibernate:

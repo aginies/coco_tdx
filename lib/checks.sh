@@ -387,11 +387,8 @@ resolve_pccs_check() {
 # mode into the global PLATFORM_CHECK_ARGS.
 platform_check_args() {
     PLATFORM_CHECK_ARGS=("check" "--auto" "--tdx")
-    if [[ "$COLLATERAL_MODE" == "pccs" ]]; then
-        PLATFORM_CHECK_ARGS+=("--pccs-url" "$PCCS_URL")
-    else
-        PLATFORM_CHECK_ARGS+=("--pccs-url" "$PCS_URL")
-    fi
+    # collateral_url() normalizes a bare PCCS base to the full API URL.
+    PLATFORM_CHECK_ARGS+=("--pccs-url" "$(collateral_url)")
 }
 
 check_platform_validity() {

@@ -1377,13 +1377,10 @@ EOF
 
     log "Generating TD Report + Quote (test_tdx_attest)"
     if ! guest_generate_quote; then
-        # Re-run the QGS pre-flight checks to pinpoint the exact red item(s).
-        # shellcheck disable=SC2034  # CHECK_RESULTS used by print_results() in checks.sh
-        CHECK_RESULTS=()
-        qgs_preflight_checks
-        print_results
-        if diagnose_quote_failure; then
-            die "Quote generation failed: PCS has no PCK certificate for this TDX module (see above). Update the platform TDX module to a PCS-registered version, or re-run with --collateral pccs."
+        # Re-run the QGS pre-flight checks to pinpoint the exact red item(s)
+        # and check the qgsd journal for known failure signatures.
+        if diagnose_quote_generation; then
+            die "Quote generation failed: see the cause(s) above. Fix them, then re-run setup-guest."
         fi
         die "test_tdx_attest failed. The red items above are the likely cause(s) — fix them, then re-run setup-guest."
     fi
