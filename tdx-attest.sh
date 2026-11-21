@@ -266,8 +266,8 @@ Options:
     --no-tdx               Create VM without TDX launch security (test-only)
     --convert-vm NAME      VM to convert to TDX (convert-tdx, auto-detected)
     --video MODEL          setup-vm/convert-tdx video device: none, virtio, qxl
-                           (default: ask on a TTY, else none for TDX, virtio
-                           for --no-tdx). TDX guests need authorize_allow_devs=
+                           (non-TDX only — a secure TDX VM cannot boot with a
+                           video device and is forced to 'none', serial console)
     --ssh-key PATH         SSH key for guest (default: ${SSH_KEY}, auto-created)
   Guest & KBS:
     --guest-ip IP          Guest IP for ssh (setup-guest, attest, secret-get, ...)

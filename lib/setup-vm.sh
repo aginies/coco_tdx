@@ -42,9 +42,11 @@ generate_vm_xml() {
     # TDX firmware and fall back to a non-TDX OVMF, so the guest is not launched
     # as a real TD and the installer never appears.
     #
-    # Video: set from VM_VIDEO (see resolve_vm_video). By default secure VMs
-    # (TDX) have no video device: the installer and guest console operate over
-    # serial (ttyS0). Regular (non-TDX) VMs default to virtio video.
+    # Video: set from VM_VIDEO (see resolve_vm_video). A secure TDX VM cannot
+    # boot with a video device (TDX guest memory is private and
+    # host-inaccessible), so TDX guests have no video device: the installer
+    # and guest console operate over serial (ttyS0). Regular (non-TDX) VMs
+    # default to virtio video.
 
     local loader_line=""
     local memfd_line=""
@@ -508,43 +510,47 @@ patch_vm_xml_tdx() {
 }
 
 # Decide the guest video device (VM_VIDEO: none|virtio|qxl).
-# --video wins; otherwise ask on an interactive TTY, else fall back to the
-# default (none for TDX, virtio for a non-TDX test VM). A hardened TDX guest
-# kernel does not enable display devices unless they are allow-listed with
-# authorize_allow_devs= on the guest kernel command line, so a reminder is
-# printed whenever a TDX guest gets a video device.
+# A secure TDX VM (Trust Domain) cannot boot with a video device: TDX guest
+# memory is private and host-inaccessible, and a display device (virtio-gpu,
+# QXL) needs the host (QEMU) to read the guest's framebuffer to render the
+# display. So a TDX guest is serial-console only (VM_VIDEO=none); the --video
+# option is only meaningful for non-TDX test VMs. For non-TDX, --video wins;
+# otherwise ask on an interactive TTY, else use the default (virtio).
 # Usage: resolve_vm_video <is_tdx 0|1>
 resolve_vm_video() {
-    local is_tdx="$1" default="none"
-    ((is_tdx)) || default="virtio"
-    if [[ -z "${VM_VIDEO}" ]]; then
-        if ((FORCE || DRY_RUN)) || [[ ! -t 0 ]]; then
-            VM_VIDEO="$default"
-        else
-            local choice
-            echo ""
-            echo "  Video device for the guest:"
-            echo "    1) none   - serial console only (TDX default)"
-            echo "    2) virtio - virtio-gpu"
-            echo "    3) qxl    - QXL"
-            read -r -p "  Choose [1-3] (default: ${default}): " choice
-            case "${choice}" in
-            "") VM_VIDEO="$default" ;;
-            1 | none) VM_VIDEO="none" ;;
-            2 | virtio) VM_VIDEO="virtio" ;;
-            3 | qxl) VM_VIDEO="qxl" ;;
-            *) die "Invalid video choice '${choice}' (expected 1-3). Or pass --video none|virtio|qxl." ;;
-            esac
+    local is_tdx="$1"
+    if ((is_tdx)); then
+        # A TD cannot use a video device; force serial console only.
+        if [[ -n "${VM_VIDEO}" && "${VM_VIDEO}" != "none" ]]; then
+            warn "A secure TDX VM cannot boot with a video device (${VM_VIDEO}): TDX guest"
+            warn "memory is private and host-inaccessible, so a display device (virtio-gpu/QXL)"
+            warn "cannot function and the TD would not boot. Using 'none' (serial console only)."
+        fi
+        VM_VIDEO="none"
+    else
+        local default="virtio"
+        if [[ -z "${VM_VIDEO}" ]]; then
+            if ((FORCE || DRY_RUN)) || [[ ! -t 0 ]]; then
+                VM_VIDEO="$default"
+            else
+                local choice
+                echo ""
+                echo "  Video device for the guest:"
+                echo "    1) none   - serial console only"
+                echo "    2) virtio - virtio-gpu"
+                echo "    3) qxl    - QXL"
+                read -r -p "  Choose [1-3] (default: ${default}): " choice
+                case "${choice}" in
+                "") VM_VIDEO="$default" ;;
+                1 | none) VM_VIDEO="none" ;;
+                2 | virtio) VM_VIDEO="virtio" ;;
+                3 | qxl) VM_VIDEO="qxl" ;;
+                *) die "Invalid video choice '${choice}' (expected 1-3). Or pass --video none|virtio|qxl." ;;
+                esac
+            fi
         fi
     fi
     log "Guest video device: ${VM_VIDEO}"
-    if ((is_tdx)) && [[ "${VM_VIDEO}" != "none" ]]; then
-        local devid="pci:0x1af4:0x1050"
-        [[ "${VM_VIDEO}" == "qxl" ]] && devid="pci:0x1b36:0x0100"
-        warn "A TDX guest kernel does not enable ${VM_VIDEO} video by default (device filter)."
-        warn "Add 'authorize_allow_devs=${devid}' to the guest kernel command line (GRUB_CMDLINE_LINUX in /etc/default/grub, regenerate GRUB config, reboot)."
-        warn "See: https://intel.github.io/ccc-linux-guest-hardening-docs/tdx-guest-hardening.html#id8"
-    fi
 }
 
 # Inject the SSH key (and disable suspend) into the guest disk via
@@ -873,10 +879,10 @@ NEXT
 # Edit a libvirt domain XML in-place to add TDX support (convert-tdx path).
 # Delegates to tools/patch_vm_xml.py --rom-loader — the single testable
 # implementation shared with the virt-install path (patch_vm_xml_tdx).
-# Preserves disk, network, graphics, UUID, MAC, etc.; video per VM_VIDEO.
+# Preserves disk, network, graphics, UUID, MAC, etc.; video per VM_VIDEO
+# (always none for a TD — a secure TDX VM cannot boot with a video device).
 # Changes: loader pflash->rom (stateless), removes nvram/memoryBacking/ioapic,
-# adds launchSecurity + vsock, disables suspend-to-mem/disk, sets video
-# (removed unless --video virtio|qxl).
+# adds launchSecurity + vsock, disables suspend-to-mem/disk, removes video.
 # Usage: edit_vm_xml_tdx <input_xml> <output_xml> <tdx_ovmf_bin> <qgs_socket>
 edit_vm_xml_tdx() {
     local input_xml="$1" output_xml="$2" ovmf_bin="$3" qgs_socket="$4"
@@ -890,7 +896,7 @@ cmd_convert_tdx() {
     require_cmd virsh python3
     log "=== Converting VM to TDX ==="
     step "Convert an existing (non-TDX) libvirt VM to a TDX Trust Domain in-place" \
-        "Edits the domain XML: pflash->ROM loader, adds launchSecurity+vsock, removes memoryBacking/ioapic, disables suspend-to-mem/disk, removes video (unless --video virtio|qxl). Preserves disk, network, MAC, graphics, UUID."
+        "Edits the domain XML: pflash->ROM loader, adds launchSecurity+vsock, removes memoryBacking/ioapic, disables suspend-to-mem/disk, removes video (a TD cannot use one). Preserves disk, network, MAC, graphics, UUID."
 
     # Resolve target VM name (mandatory)
     local vm_name="${CONVERT_VM_NAME:-}"
@@ -998,16 +1004,12 @@ Shut it down, then re-run:
     else
         error "VM missing <pm> suspend-to-mem/suspend-to-disk enabled='no' after conversion. TDX guests must not hibernate."
     fi
-    if [[ "${VM_VIDEO}" == "none" ]]; then
-        if grep -q "<video" <<<"$new_xml"; then
-            error "VM still has <video> device after TDX conversion"
-        else
-            log "VM has no video device"
-        fi
-    elif grep -A2 "<video" <<<"$new_xml" | grep -q "<model type=.${VM_VIDEO}."; then
-        log "VM has ${VM_VIDEO} video device (guest needs authorize_allow_devs=)"
+    # A secure TDX VM cannot have a video device (TDX guest memory is private
+    # and host-inaccessible); the conversion must leave none behind.
+    if grep -q "<video" <<<"$new_xml"; then
+        error "VM still has <video> device after TDX conversion"
     else
-        error "VM missing ${VM_VIDEO} video device after conversion"
+        log "VM has no video device"
     fi
 
     # Show diff

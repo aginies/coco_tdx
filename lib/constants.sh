@@ -42,9 +42,10 @@ VM_CREATOR="auto"
 DRY_RUN=0
 CONVERT_VM_NAME=""
 # Guest video device (setup-vm / convert-tdx): none, virtio or qxl.
-# Empty = ask interactively (TTY), else default: none for TDX, virtio for
-# --no-tdx. A hardened TDX guest kernel only enables a display device that is
-# allow-listed with authorize_allow_devs= on the guest kernel command line.
+# A secure TDX VM cannot boot with a video device (TDX guest memory is private
+# and host-inaccessible, so a display device cannot function) — TDX guests are
+# forced to 'none' (serial console only). For --no-tdx: empty = ask
+# interactively (TTY), else default 'virtio'.
 VM_VIDEO=""
 # QGS unix socket (libvirt default). SUSE qgsd listens here.
 QGS_SOCKET="/var/run/tdx-qgs/qgs.socket"

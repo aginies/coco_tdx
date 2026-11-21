@@ -832,7 +832,7 @@ sudo ./tdx-attest.sh setup-vm --guest-iso /path/to/SLE-16.1.iso
      `/var/lib/libvirt/boot/<vm>-installer-{kernel,initrd}`, then runs
      `virt-install --name … --memory … --vcpus … --disk … --cpu
      host-passthrough --network network=default,model=virtio --graphics
-     vnc,listen=… [--video virtio|qxl] --boot cdrom,hd <firmware> --qemu-commandline="-object
+     vnc,listen=… --boot cdrom,hd <firmware> --qemu-commandline="-object
      tdx-guest,id=tdx -machine confidential-guest-support=tdx" --location <ISO>
      --extra-args console=ttyS0,115200 --print-xml` — i.e. **XML generation
      only, nothing is started**. (On virt-install 5.x the firmware is
@@ -868,39 +868,42 @@ sudo ./tdx-attest.sh setup-vm --guest-iso /path/to/SLE-16.1.iso
    | `<vsock model='virtio'>` | The only channel for the TD to reach QGS for quote signing. |
    | `<pm><suspend-to-mem/disk enabled='no'>` | TDX TDs cannot suspend/hibernate — the saved image would be unmeasured/unencrypted. |
    | (no `<memoryBacking>`, no `<ioapic>`) | libvirt auto-adds memfd backing + split irqchip for TDX; setting them explicitly breaks launch. |
-   | serial console, no `<video>` (default) | The installer and guest run over `ttyS0`. A video device is added only with `--video virtio\|qxl` (or when chosen at the interactive prompt) — see the note below. |
+   | serial console, no `<video>` | The installer and guest run over `ttyS0`. A secure TDX VM has **no video device** — it cannot boot with one (see the note below). |
 
-   > **Note — video devices in a TDX guest:** the hardened TDX guest kernel
-   > only authorizes an allow-list of devices by default, so a display device
-   > (virtio-gpu, QXL) is **not enabled** out of the box (see
-   > [Intel TDX guest hardening — device filter](https://intel.github.io/ccc-linux-guest-hardening-docs/tdx-guest-hardening.html#id8)).
-   > `authorize_allow_devs` is a **guest kernel command-line parameter**; add
-   > it via GRUB (`GRUB_CMDLINE_LINUX` in `/etc/default/grub`, then regenerate
-   > the GRUB config and reboot):
+   > **Note — no video device in a TDX guest:** a secure TDX VM (Trust
+   > Domain) **cannot boot with a video device** (virtio-gpu or QXL) attached.
+   > TDX guest memory is *private* — encrypted by the TDX hardware and
+   > inaccessible to the host — but a display device works by having the host
+   > (QEMU) read the guest's framebuffer to render the display (e.g. over
+   > VNC). Because the host cannot read private guest memory, no display
+   > device can function inside a TD, and a TD will not boot with one
+   > attached. This is a fundamental property of TDX, not a guest kernel
+   > device-filter setting: it cannot be worked around with a kernel
+   > parameter such as `authorize_allow_devs=`.
    >
-   > virtio-gpu:
+   > **Consequence:** a TDX guest runs over the **serial console** (`ttyS0`)
+   > only. `setup-vm` and `convert-tdx` use `--video none` for TDX (no
+   > `<video>` element in the domain XML); the `--video virtio|qxl` option is
+   > only meaningful for non-TDX test VMs (`--no-tdx`).
    >
-   > ```
-   > authorize_allow_devs=pci:0x1af4:0x1050
-   > ```
-   >
-   > QXL:
-   >
-   > ```
-   > authorize_allow_devs=pci:0x1b36:0x0100
-   > ```
-   >
-   > Both at once:
-   >
-   > ```
-   > authorize_allow_devs=pci:0x1af4:0x1050,pci:0x1b36:0x0100
-   > ```
-   >
-   > **Choosing the video device:** `setup-vm` and `convert-tdx` take
-   > `--video none|virtio|qxl`. Without it, they ask interactively on a TTY
-   > (default `none`); non-interactive runs (`-f`, piped, `--dry-run`) use
-   > `none` for TDX and `virtio` for `--no-tdx`. When a TDX guest gets a video
-   > device, the script prints the matching `authorize_allow_devs=` value.
+   > **Other PCI devices — guest kernel device filter:** the hardened TDX
+   > guest kernel blocks every PCI bus driver by default except a small
+   > allow-list (currently `virtio_net`, `virtio_console`, `virtio_blk` and
+   > `9pnet_virtio`). To let the guest kernel enable a PCI device that is not
+   > on that allow-list, add it with the `authorize_allow_devs=` guest kernel
+   > command-line parameter — a comma-separated list of
+   > `pci:<vendor>:<device>` IDs — via GRUB (`GRUB_CMDLINE_LINUX` in
+   > `/etc/default/grub`, then regenerate the GRUB config and reboot). Intel
+   > marks this option as **debug-only**: it should not be used in production,
+   > because it can enable devices that have not been hardened against a
+   > malicious host; a device that is genuinely needed must instead be added
+   > to the kernel's default allow-list. See [Intel TDX guest hardening —
+   > device filter](https://intel.github.io/ccc-linux-guest-hardening-docs/tdx-guest-hardening.html)
+   > and the [security spec — kernel command
+   > line](https://intel.github.io/ccc-linux-guest-hardening-docs/security-spec.html).
+   > Note this only controls whether the guest kernel *enables* a device — it
+   > cannot make a display device work, because that additionally needs host
+   > access to the guest's private framebuffer.
 
 4. **Generates an SSH key** (`ssh-keygen -t ed25519`) if absent.
    - *Why:* all later steps drive the guest passwordlessly over SSH.
@@ -930,8 +933,8 @@ sudo ./tdx-attest.sh convert-tdx --convert-vm <vm>
 > **Tip:** If `--convert-vm` is omitted, `convert-tdx` automatically detects running/available VMs and prompts interactively.
 
 `convert-tdx` edits the domain XML in place (pflash→ROM loader, adds
-`launchSecurity` + `vsock`, disables suspend, removes `<video>` unless
-`--video virtio|qxl` is given) using a small Python XML
+`launchSecurity` + `vsock`, disables suspend, removes any `<video>`
+device — a TD cannot use one) using a small Python XML
 transformer, with automatic backup and rollback. *Why Python:* bash text
 munging of XML is fragile; ElementTree parses it properly.
 
@@ -957,9 +960,9 @@ through the console.
    ```
 
    - *Why console:* the installer is wired to `console=ttyS0` (serial) — the
-     reliable channel for a TD. The VNC display works too (TDX screen
-     sharing), but the serial console never depends on the guest's display
-     stack.
+     reliable channel for a TD. A TDX guest has no video device (see the note
+     in Step 5), so there is no VNC display to fall back on; the serial
+     console is the only way in and never depends on a guest display stack.
 
 2. **Install SLES 16.1** from the ISO. Use the default kernel (6.1+ is
    required for TDX guest support).

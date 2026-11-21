@@ -5,6 +5,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- **Video devices are impossible in a secure TDX VM (doc + code correction).**
+  A Trust Domain cannot boot with a video device (virtio-gpu or QXL) attached:
+  TDX guest memory is private and host-inaccessible, and a display device needs
+  the host (QEMU) to read the guest's framebuffer to render the display. The
+  1.4.0 `authorize_allow_devs=` guidance for *video* (which only addresses the
+  guest kernel device filter, not the private-memory limitation) is removed,
+  while a general reference to the guest kernel device filter and
+  `authorize_allow_devs=` (debug-only) for other PCI devices is retained.
+  `setup-vm` and
+  `convert-tdx` now force `--video none` (serial console only) for TDX and warn
+  if a video device was explicitly requested; `--video virtio|qxl` applies only
+  to non-TDX (`--no-tdx`) test VMs. README and `README.html` updated.
+
 ## [1.4.0] - 2026-11-19
 
 ### Added

@@ -35,8 +35,9 @@ Usage:
     patch_vm_xml.py <input_xml> <output_xml> <qgs_socket> --rom-loader OVMF_BIN
 
     Both modes accept --video none|virtio|qxl (default: none = remove all
-    <video> devices; a TDX guest must allow-list a display device with
-    authorize_allow_devs= on its kernel command line).
+    <video> devices). A secure TDX VM cannot boot with a video device (TDX
+    guest memory is private and host-inaccessible), so TDX guests must use
+    'none' (serial console only).
 
 Parsing uses defusedxml.ElementTree.fromstring when available (guards
 against entity-expansion attacks) and falls back to the standard library,
@@ -121,12 +122,12 @@ VIDEO_MODELS = ("none", "virtio", "qxl")
 def set_video(devices, model="none"):
     """Set the <video> device in <devices>.
 
-    "none" (default) removes every <video> element: a hardened TDX guest
-    kernel does not authorize display devices unless they are allow-listed
-    with authorize_allow_devs= on the guest kernel command line. "virtio" or
-    "qxl" replaces any existing <video> with a single primary device of that
-    model (the guest then needs authorize_allow_devs=pci:0x1af4:0x1050 for
-    virtio-gpu or pci:0x1b36:0x0100 for QXL).
+    "none" (default) removes every <video> element. A secure TDX VM cannot
+    boot with a video device (TDX guest memory is private and
+    host-inaccessible, so a display device cannot function), so TDX guests
+    must use "none" (serial console only). "virtio" or "qxl" replaces any
+    existing <video> with a single primary device of that model (non-TDX
+    VMs only).
     """
     if devices is None:
         return
