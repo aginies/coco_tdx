@@ -2,7 +2,8 @@
 
 Status: **open upstream** (no fix on `confidential-containers/trustee` `main`
 as of commit `9dd128c`, 2026-11-23). Workaround available in this repo:
-`tdx-attest.sh collateral-offline`.
+`tdx-attest.sh collateral-offline` — **verified on tdxdev1 (SLES 16.1,
+trustee 0.23): quote verified, TCB `UpToDate`, no panic.**
 
 ## Symptom
 
@@ -100,6 +101,23 @@ on 0.23 (QCNL is still used by QGS on the host for quote *generation*).
 `collateral_service` also accepts a `file://` URL to a JSON file in the
 [Intel PCS Client Tool](https://github.com/intel/confidential-computing.tee.dcap/tree/main/tools/PcsClientTool)
 format ([config docs](https://github.com/confidential-containers/trustee/blob/main/attestation-service/docs/config.md)).
+
+## Other 0.23 change: EAR token claim layout
+
+Upstream commit `5aceb8d` ("as: migrate EAR token to draft-04 claim layout",
+BREAKING) renamed the token claims:
+
+| trustee <= 0.22 | trustee >= 0.23 |
+|-----------------|-----------------|
+| `submods.cpu0."ear.status"` | `submods.cpu0.ear_status` |
+| `"ear.trustworthiness-vector"` | `ear_trustworthiness_vector` |
+| `"ear.veraison.annotated-evidence".tdx.quote` | `ear_attester_claims.claims.quote` |
+| `"ear.veraison.annotated-evidence".tdx.tcb_status` | `ear_attester_claims.claims.tcb_status` |
+
+`tdx-attest.sh attest` parses both layouts (`ear_fields` in `lib/attest.sh`).
+Before that fix the report showed `EAR Status: Unknown` on 0.23. Any custom
+KBS policy that reads `ear.status` must switch to `ear_status` (see
+upstream `kbs/sample_policies/affirming.rego`).
 
 ## Workarounds
 

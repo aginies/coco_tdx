@@ -89,6 +89,9 @@ sudo ./tdx-attest.sh check --check-platform
 sudo ./tdx-attest.sh setup-host
 sudo ./tdx-attest.sh setup-qgs
 sudo ./tdx-attest.sh setup-trustee
+# trustee 0.23 only: grpc-as panics on its HTTPS collateral client — after
+# setup-guest (step 3), run 'sudo ./tdx-attest.sh collateral-offline' once
+# (see "Trustee 0.23" in Step 4)
 sudo ./tdx-attest.sh setup-vm --guest-iso /path/to/SLE-16.1.iso
 
 # 2. Manual: install SLES in the VM
@@ -757,8 +760,11 @@ sudo ./tdx-attest.sh setup-trustee
      For production, gate it on real claims (e.g. `tdx.report.mrtd`).
 
 6. **Writes the three config files:**
-   - `/etc/grpc-as.json` → CoCo-AS: storage dir, signer key, PCCS URL for
-     collateral.
+   - `/etc/grpc-as.json` → CoCo-AS: storage dir, signer key, and the
+     collateral source `verifier_config.dcap_verifier.collateral_service`
+     (PCS or PCCS URL, or a `file://` offline collateral file — see
+     [Trustee 0.23](#trustee-023-grpc-as-panic--offline-collateral)). An
+     existing `file://` source is kept on re-run.
    - `/etc/kbs.json` → KBS: listen address, CoCo-AS address, JWKS file,
      policy path. (Lab settings: `insecure_http`, `InsecureAllowAll`.)
    - `/etc/rvps.json` → RVPS: storage dir.
@@ -796,6 +802,59 @@ ss -tln | grep -E '3000|8080'                  # ports listening
 > `InsecureAllowAll` — no TLS, no tenant isolation. (3) Step 9 Method B leaves
 > the EAR token on the host, so anyone holding it can fetch the secret — use
 > the in-guest `kbs-client` (Method A) for real secret gating.
+
+#### Trustee 0.23: grpc-as panic → offline collateral
+
+**Symptom (trustee `0.23.0~git0.564a3ba5`, SLES 16.1; 0.22 is fine):** the
+first `attest` fails with `RST_STREAM with error code: CANCEL`, later ones
+with `connection refused`. `journalctl -u grpc-as` shows:
+
+```
+panicked at .../reqwest-0.13.5/src/async_impl/client.rs:2524:38:
+Client::new(): reqwest::Error { kind: Builder, source: Normal(ErrorStack([])) }
+...
+LazyLock instance has previously been poisoned
+```
+
+**Why:** 0.23 fetches DCAP collateral with a new built-in Rust HTTPS client
+(it no longer uses the QCNL C library for verification). When that client's
+OpenSSL TLS setup fails, grpc-as panics instead of returning an error, and
+every later request panics too. Not fixed upstream yet. Full analysis:
+[TRUSTEE-0.23-GRPC-AS-PANIC.md](TRUSTEE-0.23-GRPC-AS-PANIC.md).
+
+**Workaround — offline collateral file** (CoCo-AS never builds the HTTPS
+client):
+
+```bash
+sudo ./tdx-attest.sh collateral-offline                    # FMSPC from a fresh guest quote
+sudo ./tdx-attest.sh collateral-offline --fmspc 70A06D070000   # no guest needed
+sudo ./tdx-attest.sh collateral-offline --collateral pccs --pccs-url https://127.0.0.1:8081
+sudo ./tdx-attest.sh attest
+```
+
+What it does:
+
+1. Resolves the platform **FMSPC**: `--fmspc`, or read from the PCK
+   certificate inside a fresh guest quote.
+2. Downloads the collateral on the host with `curl` from the selected source
+   (`--collateral pcs|pccs`): TDX/SGX TCB info, QE identities (`standard` +
+   `early`), PCK CRLs with issuer chains, and the Intel Root CA CRL.
+3. Writes `/var/lib/attestation-service/dcap/collateral.json` (Intel PCS
+   Client Tool format, owned by `coco_as`).
+4. Sets `collateral_service` to `file:///var/lib/attestation-service/dcap/collateral.json`
+   in `/etc/grpc-as.json` and restarts `grpc-as`.
+5. Prints the earliest `nextUpdate` of the collateral.
+
+> **Collateral expires** (about 30 days). Re-run `collateral-offline` before
+> the printed `nextUpdate`; `verify` flags an expired or unreadable file.
+> The file covers only this platform's FMSPC, and new Intel TCB updates are
+> only seen after a refresh. Go back to online collateral with
+> `sudo ./tdx-attest.sh collateral-online`. The other option is to downgrade
+> to trustee 0.22 and lock it (`zypper al trustee`).
+
+`attest` now checks that `grpc-as` is running before sending the quote, hides
+Rust backtrace frames in the log dump so the `panicked at` line stays
+visible, and prints the workaround when it sees this panic.
 
 ---
 
@@ -1190,6 +1249,13 @@ tokens" at the end of this guide.)*
 
 The `attest` command decodes the EAR token (a JWT built on EAT, RFC 9711): extracts the payload, formats the claims, displays a structured verification report, and checks `ear.status` as well as the Intel PCS `tcb_status`.
 
+> **Claim names depend on the trustee version.** Trustee 0.23 moved the EAR
+> token to the draft-04 layout: `ear.status` → `ear_status`,
+> `ear.trustworthiness-vector` → `ear_trustworthiness_vector`, and
+> `ear.veraison.annotated-evidence.tdx.*` → `ear_attester_claims.claims.*`.
+> `attest` reads both layouts; this guide writes `ear.status` for either.
+> A custom KBS policy that reads `ear.status` must use `ear_status` on 0.23.
+
 **Expected output (Hardware quote verified, awaiting RVPS enrollment):**
 
 ```
@@ -1376,7 +1442,9 @@ and start many services; a single wrong endpoint or typo in the JSON fails
 attestation silently. `verify` cross-checks:
 
 - all config files exist and are valid JSON (`jq`/`python3`),
-- **PCCS URL is the same** in QCNL (QGS) and CoCo-AS config,
+- **PCCS URL is the same** in QCNL (QGS) and CoCo-AS config — or, with
+  offline collateral (`file://`), that the file exists, is readable by
+  `coco_as` and has not expired,
 - KBS points at the configured CoCo-AS address,
 - JWKS file and KBS admin key are wired,
 - all 4 stack services active (`qgsd`, `grpc-as`, `kbs`, `rvps`; `trustee.service` is intentionally disabled), both ports listening (`3000`, `8080`),
@@ -1411,6 +1479,11 @@ If your host **cannot reach Intel PCS** (no internet, air-gapped network,
 compliance requirements), you must run a local **PCCS** (Provisioning
 Certification Caching Service) that caches PCS collateral locally. The scripts
 support this via the `--collateral pccs --pccs-url …` flags.
+
+> CoCo-AS on trustee 0.23 can also verify from a local collateral file
+> instead of a live PCS/PCCS: `collateral-offline` (see
+> [Trustee 0.23](#trustee-023-grpc-as-panic--offline-collateral)). QGS still
+> needs PCS or a PCCS for the PCK certificate when generating quotes.
 
 ### What is PCCS?
 
@@ -1641,6 +1714,10 @@ was verified" — that's why the script can use it as a bearer token in Step 9.
 | `zypper dup` fails: `nothing provides 'libspdlog.so.1.15()(64bit)'` (guest in `setup-guest`, or a SLES 16.1 host with the Virtualization:SGX OBS repo) | The OBS packages (e.g. `libnvat2`) depend on libraries from the *SUSE Package Hub* module, which is not enabled on a stock SLES 16.1 system | `sudo suseconnect -p PackageHub/16.1/x86_64` (check `suseconnect -l`), then `sudo zypper refresh` and re-run `zypper dup` / `setup-guest` |
 | Guest can't reach KBS (secret-get times out) | Host firewall blocks 8080, wrong guest IP, or libvirt NAT issue | From the guest: `curl -sI http://<HOST_IP>:8080` — check the host firewall (`sudo firewall-cmd --list-ports`) and re-fetch the IP with `virsh net-dhcp-leases default` |
 | CoCo-AS log: `rustls_platform_verifier … UnknownIssuer` / local PCCS reports TLS certificate errors | PCCS server cert is self-signed (not signed by an anchored CA), the CA is missing from the p11-kit store, or `grpc-as` started before the CA was anchored | Run `./pccs-check.sh local-pccs` (audits service, cert chain, both trust stores, live TLS); fix with `sudo ./tdx-attest.sh setup-host --collateral pccs --pccs-url https://127.0.0.1:8081 --deploy-pccs`, then `systemctl restart grpc-as`. For an existing PCCS: pass its root CA via `--pccs-ca` |
+| `attest`: `RST_STREAM with error code: CANCEL`, grpc-as log `Client::new(): reqwest::Error { kind: Builder, source: Normal(ErrorStack([])) }` or `LazyLock instance has previously been poisoned` | trustee 0.23 grpc-as panics when its HTTPS collateral client fails to set up TLS | `sudo ./tdx-attest.sh collateral-offline`, then `attest`. Or downgrade to trustee 0.22. See [TRUSTEE-0.23-GRPC-AS-PANIC.md](TRUSTEE-0.23-GRPC-AS-PANIC.md) |
+| `attest`: `connection refused` on 127.0.0.1:3000 | `grpc-as.service` stopped or crashed (`attest` now says which) | `systemctl start grpc-as.service`; check the `panicked at` line it prints |
+| `verify`: `CoCo-AS offline collateral EXPIRED` | The `file://` collateral passed its `nextUpdate` | Re-run `sudo ./tdx-attest.sh collateral-offline --fmspc <FMSPC>` |
+| `attest` report shows `EAR Status: Unknown` on trustee 0.23 | Older script version that only reads the pre-0.23 claim names (`ear.status`) | Update `tdx-attest.sh` (reads both `ear.status` and `ear_status`) |
 | `grpcurl: command not found` | Auto-installed grpcurl not in PATH | The script installs it to `/usr/local/bin` (root) or `~/.local/bin` — check `echo $PATH`, or re-run `attest` as root so it lands in `/usr/local/bin` |
 | Quotes work, then break after host reboot | `/run/dcap/qcnl.conf` wiped (tmpfs) | `systemctl status qgsd-setup.service` — it should restore it |
 

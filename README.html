@@ -98,6 +98,9 @@ sudo ./tdx-attest.sh check --check-platform
 sudo ./tdx-attest.sh setup-host
 sudo ./tdx-attest.sh setup-qgs
 sudo ./tdx-attest.sh setup-trustee
+# trustee 0.23 only: grpc-as panics on its HTTPS collateral client — after
+# setup-guest (step 3), run 'sudo ./tdx-attest.sh collateral-offline' once
+# (see "Trustee 0.23" in Step 4)
 sudo ./tdx-attest.sh setup-vm --guest-iso /path/to/SLE-16.1.iso
 
 # 2. Manual: install SLES in the VM
@@ -216,7 +219,7 @@ sudo ./tdx-attest.sh check --check-platform</pre>
 </ol>
 <hr>
 <h3 id="platform-registration-with-intel-sgxtdx-registration-service">Platform Registration with Intel SGX/TDX Registration Service</h3>
-<h4>When is Platform Registration Required?</h4>
+<h4 id="when-is-platform-registration-required">When is Platform Registration Required?</h4>
 <p>On modern multi-package and scalable Intel server processors (including <strong>Xeon 6 / Granite Rapids</strong>, Emerald Rapids, and Sapphire Rapids), Intel does <strong>not</strong> publish PCK certificates by default until the platform's hardware manifest is registered.</p>
 <p>If your host has not been registered with Intel, you will observe the following symptoms:</p>
 <ul>
@@ -229,14 +232,14 @@ sudo ./tdx-attest.sh check --check-platform</pre>
 <ul>
   <li>Guest quote generation fails with error <code>0xe011</code> or <code>0xe01b</code>.</li>
 </ul>
-<h4>Fully Automated Registration</h4>
+<h4 id="fully-automated-registration">Fully Automated Registration</h4>
 <p>You can register your platform with a single command using your Intel Trusted Services subscription key (from the <a href="https://api.portal.trustedservices.intel.com/">Intel Trusted Services Portal</a> for the <em>Intel® Software Guard Extensions Registration Service</em>):</p>
 <pre># Using pccs-check.sh:
 sudo ./pccs-check.sh register --subscription "YOUR_PRIMARY_KEY"
 
 # Or using tdx-attest.sh:
 sudo ./tdx-attest.sh register-platform --subscription "YOUR_PRIMARY_KEY"</pre>
-<h4>What the command automates</h4>
+<h4 id="what-the-command-automates">What the command automates</h4>
 <ol>
   <li><strong>Extracts the Platform Manifest</strong>:</li>
 </ol>
@@ -265,7 +268,7 @@ sudo ./tdx-attest.sh register-platform --subscription "YOUR_PRIMARY_KEY"</pre>
 <hr>
 <h3 id="manual--advanced-platform-queries">Manual / Advanced Platform Queries</h3>
 <p>You can also run granular checks using <code>pccs-check.sh</code>:</p>
-<h4>1. Inspect Detailed TCB Levels &amp; Advisories</h4>
+<h4 id="1-inspect-detailed-tcb-levels--advisories">1. Inspect Detailed TCB Levels &amp; Advisories</h4>
 <p>To see all valid TCB levels, microcode requirements, and CVE advisories for your processor:</p>
 <pre>./pccs-check.sh tcb --tdx
 # Or with explicit FMSPC:
@@ -290,11 +293,11 @@ PCESVN STATUS         DATE         WARNING
   <li><strong>ConfigurationNeeded / SWHardeningNeeded:</strong> BIOS configuration or kernel mitigation parameters are missing.</li>
   <li><strong>Revoked:</strong> Keys or platform revoked by Intel.</li>
 </ul>
-<h4>2. Test TDX Quoting Enclave Identity</h4>
+<h4 id="2-test-tdx-quoting-enclave-identity">2. Test TDX Quoting Enclave Identity</h4>
 <p>To confirm that Intel PCS serves the TDX QE identity matching your environment:</p>
 <pre>./pccs-check.sh qe-identity --tdx</pre>
 <p>Should return HTTP 200 and show enclave identity <code>TD_QE</code> with <code>isvprodid: 2</code>.</p>
-<h4>3. Test PCK Certificate Issuance Directly</h4>
+<h4 id="3-test-pck-certificate-issuance-directly">3. Test PCK Certificate Issuance Directly</h4>
 <pre>./pccs-check.sh pckcert \
   --ppid &lt;768-hex-chars&gt; \
   --cpusvn &lt;32-hex-chars&gt; \
@@ -590,7 +593,7 @@ id qemu | grep qgsd                       # qemu in qgsd group</pre>
   <li><strong>Writes the three config files:</strong></li>
 </ol>
 <ul>
-  <li><code>/etc/grpc-as.json</code> → CoCo-AS: storage dir, signer key, PCCS URL for collateral.</li>
+  <li><code>/etc/grpc-as.json</code> → CoCo-AS: storage dir, signer key, and the collateral source <code>verifier_config.dcap_verifier.collateral_service</code> (PCS or PCCS URL, or a <code>file://</code> offline collateral file — see <a href="#trustee-023-grpc-as-panic--offline-collateral">Trustee 0.23</a>). An existing <code>file://</code> source is kept on re-run.</li>
   <li><code>/etc/kbs.json</code> → KBS: listen address, CoCo-AS address, JWKS file, policy path. (Lab settings: <code>insecure_http</code>, <code>InsecureAllowAll</code>.)</li>
   <li><code>/etc/rvps.json</code> → RVPS: storage dir.</li>
   <li><em>Why explicit configs:</em> every component must point at the same endpoints; inconsistent addresses are a classic silent failure.</li>
@@ -620,6 +623,30 @@ ss -tln | grep -E '3000|8080'                  # ports listening</pre>
 <div class="callout info">
   <p><strong>Note — lab vs production:</strong> this setup is deliberately a <strong>lab configuration</strong>. Three things are permissive and must be changed for real use: (1) the resource policy is <strong>allow-all</strong> — any attested client can fetch any secret; in production, gate it on real claims (e.g. <code>tdx.report.mrtd</code>). (2) KBS runs with <code>insecure_http</code> + <code>InsecureAllowAll</code> — no TLS, no tenant isolation. (3) Step 9 Method B leaves the EAR token on the host, so anyone holding it can fetch the secret — use the in-guest <code>kbs-client</code> (Method A) for real secret gating.</p>
 </div>
+<h4 id="trustee-023-grpc-as-panic--offline-collateral">Trustee 0.23: grpc-as panic → offline collateral</h4>
+<p><strong>Symptom (trustee <code>0.23.0~git0.564a3ba5</code>, SLES 16.1; 0.22 is fine):</strong> the first <code>attest</code> fails with <code>RST_STREAM with error code: CANCEL</code>, later ones with <code>connection refused</code>. <code>journalctl -u grpc-as</code> shows:</p>
+<pre>panicked at .../reqwest-0.13.5/src/async_impl/client.rs:2524:38:
+Client::new(): reqwest::Error { kind: Builder, source: Normal(ErrorStack([])) }
+...
+LazyLock instance has previously been poisoned</pre>
+<p><strong>Why:</strong> 0.23 fetches DCAP collateral with a new built-in Rust HTTPS client (it no longer uses the QCNL C library for verification). When that client's OpenSSL TLS setup fails, grpc-as panics instead of returning an error, and every later request panics too. Not fixed upstream yet. Full analysis: <a href="TRUSTEE-0.23-GRPC-AS-PANIC.md">TRUSTEE-0.23-GRPC-AS-PANIC.md</a>.</p>
+<p><strong>Workaround — offline collateral file</strong> (CoCo-AS never builds the HTTPS client):</p>
+<pre>sudo ./tdx-attest.sh collateral-offline                    # FMSPC from a fresh guest quote
+sudo ./tdx-attest.sh collateral-offline --fmspc 70A06D070000   # no guest needed
+sudo ./tdx-attest.sh collateral-offline --collateral pccs --pccs-url https://127.0.0.1:8081
+sudo ./tdx-attest.sh attest</pre>
+<p>What it does:</p>
+<ol>
+  <li>Resolves the platform <strong>FMSPC</strong>: <code>--fmspc</code>, or read from the PCK certificate inside a fresh guest quote.</li>
+  <li>Downloads the collateral on the host with <code>curl</code> from the selected source (<code>--collateral pcs|pccs</code>): TDX/SGX TCB info, QE identities (<code>standard</code> + <code>early</code>), PCK CRLs with issuer chains, and the Intel Root CA CRL.</li>
+  <li>Writes <code>/var/lib/attestation-service/dcap/collateral.json</code> (Intel PCS Client Tool format, owned by <code>coco_as</code>).</li>
+  <li>Sets <code>collateral_service</code> to <code>file:///var/lib/attestation-service/dcap/collateral.json</code> in <code>/etc/grpc-as.json</code> and restarts <code>grpc-as</code>.</li>
+  <li>Prints the earliest <code>nextUpdate</code> of the collateral.</li>
+</ol>
+<div class="callout info">
+  <p><strong>Collateral expires</strong> (about 30 days). Re-run <code>collateral-offline</code> before the printed <code>nextUpdate</code>; <code>verify</code> flags an expired or unreadable file. The file covers only this platform's FMSPC, and new Intel TCB updates are only seen after a refresh. Go back to online collateral with <code>sudo ./tdx-attest.sh collateral-online</code>. The other option is to downgrade to trustee 0.22 and lock it (<code>zypper al trustee</code>).</p>
+</div>
+<p><code>attest</code> now checks that <code>grpc-as</code> is running before sending the quote, hides Rust backtrace frames in the log dump so the <code>panicked at</code> line stays visible, and prints the workaround when it sees this panic.</p>
 <hr>
 </div>
 
@@ -878,6 +905,9 @@ sudo zypper refresh</pre>
 </ul>
 <p><strong>The EAR token in one sentence:</strong> CoCo-AS wraps the verified quote in an <strong>EAR token</strong> — a JWT (built on EAT, RFC 9711) carrying the measured claims plus the <code>allow</code> decision; KBS verifies its signature and reads <code>allow</code> without re-doing the attestation. <em>(Full background: "Appendix — JWT &amp; EAR tokens" at the end of this guide.)</em></p>
 <p>The <code>attest</code> command decodes the EAR token (a JWT built on EAT, RFC 9711): extracts the payload, formats the claims, displays a structured verification report, and checks <code>ear.status</code> as well as the Intel PCS <code>tcb_status</code>.</p>
+<div class="callout info">
+  <p><strong>Claim names depend on the trustee version.</strong> Trustee 0.23 moved the EAR token to the draft-04 layout: <code>ear.status</code> → <code>ear_status</code>, <code>ear.trustworthiness-vector</code> → <code>ear_trustworthiness_vector</code>, and <code>ear.veraison.annotated-evidence.tdx.*</code> → <code>ear_attester_claims.claims.*</code>. <code>attest</code> reads both layouts; this guide writes <code>ear.status</code> for either. A custom KBS policy that reads <code>ear.status</code> must use <code>ear_status</code> on 0.23.</p>
+</div>
 <p class="caption"><strong>Expected output (Hardware quote verified, awaiting RVPS enrollment):</strong></p>
 <pre>=============================================================================
                        TDX REMOTE ATTESTATION REPORT
@@ -976,7 +1006,7 @@ sudo ./tdx-attest.sh secret-set --file /tmp/my-secret --path default/test/secret
 <p>Read-only deep audit. <em>Why it exists:</em> the setup steps write many config files and start many services; a single wrong endpoint or typo in the JSON fails attestation silently. <code>verify</code> cross-checks:</p>
 <ul>
   <li>all config files exist and are valid JSON (<code>jq</code>/<code>python3</code>),</li>
-  <li><strong>PCCS URL is the same</strong> in QCNL (QGS) and CoCo-AS config,</li>
+  <li><strong>PCCS URL is the same</strong> in QCNL (QGS) and CoCo-AS config — or, with offline collateral (<code>file://</code>), that the file exists, is readable by <code>coco_as</code> and has not expired,</li>
   <li>KBS points at the configured CoCo-AS address,</li>
   <li>JWKS file and KBS admin key are wired,</li>
   <li>all 4 stack services active (<code>qgsd</code>, <code>grpc-as</code>, <code>kbs</code>, <code>rvps</code>; <code>trustee.service</code> is intentionally disabled), both ports listening (<code>3000</code>, <code>8080</code>),</li>
@@ -1006,6 +1036,9 @@ sudo ./tdx-attest.sh secret-set --file /tmp/my-secret --path default/test/secret
 <div class="step" id="step-12--air-gapped--offline-setup-optional">
 <h2><span class="step-badge">Step 12</span>Air-gapped / Offline Setup (optional)</h2>
 <p>If your host <strong>cannot reach Intel PCS</strong> (no internet, air-gapped network, compliance requirements), you must run a local <strong>PCCS</strong> (Provisioning Certification Caching Service) that caches PCS collateral locally. The scripts support this via the <code>--collateral pccs --pccs-url …</code> flags.</p>
+<div class="callout info">
+  <p>CoCo-AS on trustee 0.23 can also verify from a local collateral file instead of a live PCS/PCCS: <code>collateral-offline</code> (see <a href="#trustee-023-grpc-as-panic--offline-collateral">Trustee 0.23</a>). QGS still needs PCS or a PCCS for the PCK certificate when generating quotes.</p>
+</div>
 <h3 id="what-is-pccs">What is PCCS?</h3>
 <p>PCCS is Intel's local caching service (Node.js + SQLite) that stores:</p>
 <ul>
@@ -1029,14 +1062,14 @@ sudo ./tdx-attest.sh secret-set --file /tmp/my-secret --path default/test/secret
   <p><strong>⚠️ Registration still needs internet:</strong> On Xeon 6 / Granite Rapids / Emerald Rapids, Intel does <strong>not</strong> publish PCK certificates until you register the platform. You must do this step <strong>while the host still has internet access</strong>, then go offline. Run <code>sudo ./tdx-attest.sh register-platform --subscription &lt;KEY&gt;</code> before disconnecting.</p>
 </div>
 <h3 id="step-by-step-initial-sync-while-you-still-have-internet">Step-by-step: initial sync (while you still have internet)</h3>
-<h4>1. Deploy the PCCS server</h4>
+<h4 id="1-deploy-the-pccs-server">1. Deploy the PCCS server</h4>
 <pre># One command: installs suse-sgx-dcap-pccs, generates the CA + leaf
 # certificate chain, anchors the CA in the trust stores, starts the
 # service and verifies the TLS chain:
 sudo ./tdx-attest.sh setup-host --collateral pccs \
     --pccs-url https://127.0.0.1:8081 --deploy-pccs</pre>
 <p>(For a PCCS that already exists elsewhere, skip this and pass its root CA with <code>--pccs-ca /path/to/pccs-ca.pem</code> instead — see the Step 2 tip.)</p>
-<h4>2. Warm the PCCS cache</h4>
+<h4 id="2-warm-the-pccs-cache">2. Warm the PCCS cache</h4>
 <p>The packaged PCCS uses <code>CachingFillMode: LAZY</code>: it fetches collateral from Intel PCS <strong>on first request</strong>, then serves it from the local SQLite cache (<code>/var/lib/pccs/pckcache.db</code>). A daily refresh (<code>RefreshSchedule</code>, default 01:00) keeps it current while online. Warm the cache by running the platform checks against the PCCS:</p>
 <pre># TCB status via the local PCCS (not Intel PCS):
 ./pccs-check.sh tcb --tdx --pccs-url https://127.0.0.1:8081
@@ -1047,12 +1080,12 @@ sudo ./tdx-attest.sh setup-host --collateral pccs \
 # Full audit: service, cert chain, trust stores, TLS handshake:
 ./pccs-check.sh local-pccs</pre>
 <p>Verify in the PCCS log that the upstream fetches happened and the data was cached: <code>grep -E "trustedservices|INSERT" /var/lib/pccs/logs/pccs_server.log</code>.</p>
-<h4>4. Register your platform (if needed)</h4>
+<h4 id="4-register-your-platform-if-needed">4. Register your platform (if needed)</h4>
 <pre># MUST be done while still connected to Intel PCS:
 sudo ./tdx-attest.sh register-platform --subscription "YOUR_PRIMARY_KEY"</pre>
 <h3 id="step-by-step-going-offline">Step-by-step: going offline</h3>
-<h4>5. Disconnect the host from the internet</h4>
-<h4>6. Run the full setup with <code>--collateral pccs</code></h4>
+<h4 id="5-disconnect-the-host-from-the-internet">5. Disconnect the host from the internet</h4>
+<h4 id="6-run-the-full-setup-with---collateral-pccs">6. Run the full setup with <code>--collateral pccs</code></h4>
 <pre># All host setup commands now use --collateral pccs:
 sudo ./tdx-attest.sh check --check-platform --collateral pccs --pccs-url https://&lt;PCCS_HOST&gt;:8081
 sudo ./tdx-attest.sh setup-host --collateral pccs --pccs-url https://&lt;PCCS_HOST&gt;:8081
@@ -1063,7 +1096,7 @@ sudo ./tdx-attest.sh setup-vm --guest-iso /path/to/SLE-16.1.iso --collateral pcc
   <span class="tag">Note</span>
   <p>The <code>--collateral pccs --pccs-url</code> flags are propagated to <code>setup-host</code> (which writes QCNL config pointing at PCCS) and to <code>setup-trustee</code> (which configures CoCo-AS to read from PCCS). <code>setup-qgs</code> and <code>setup-vm</code> don't directly use the flag but benefit from the QCNL config written by <code>setup-host</code>.</p>
 </div>
-<h4>7. Complete the remaining steps (6–11) as usual</h4>
+<h4 id="7-complete-the-remaining-steps-611-as-usual">7. Complete the remaining steps (6–11) as usual</h4>
 <p>Steps 6–11 (guest OS install, guest setup, attestation, secret delivery, verify, cleanup) are <strong>identical</strong> to the online flow. The only difference is that quote verification reads collateral from PCCS instead of Intel PCS.</p>
 <h3 id="private-ca-for-an-existing-pccs">Private CA for an existing PCCS</h3>
 <p>If your PCCS is deployed outside of this script and uses a private root CA, the CA must be trusted by <strong>both</strong> consumers before attestation works:</p>
@@ -1146,6 +1179,10 @@ sudo ./tdx-attest.sh setup-vm --guest-iso /path/to/SLE-16.1.iso --collateral pcc
   <tr><td><code>zypper dup</code> fails: <code>nothing provides 'libspdlog.so.1.15()(64bit)'</code> (guest in <code>setup-guest</code>, or a SLES 16.1 host with the Virtualization:SGX OBS repo)</td><td>The OBS packages (e.g. <code>libnvat2</code>) depend on libraries from the <em>SUSE Package Hub</em> module, which is not enabled on a stock SLES 16.1 system</td><td><code>sudo suseconnect -p PackageHub/16.1/x86_64</code> (check <code>suseconnect -l</code>), then <code>sudo zypper refresh</code> and re-run <code>zypper dup</code> / <code>setup-guest</code></td></tr>
   <tr><td>Guest can't reach KBS (secret-get times out)</td><td>Host firewall blocks 8080, wrong guest IP, or libvirt NAT issue</td><td>From the guest: <code>curl -sI http://&lt;HOST_IP&gt;:8080</code> — check the host firewall (<code>sudo firewall-cmd --list-ports</code>) and re-fetch the IP with <code>virsh net-dhcp-leases default</code></td></tr>
   <tr><td>CoCo-AS log: <code>rustls_platform_verifier … UnknownIssuer</code> / local PCCS reports TLS certificate errors</td><td>PCCS server cert is self-signed (not signed by an anchored CA), the CA is missing from the p11-kit store, or <code>grpc-as</code> started before the CA was anchored</td><td>Run <code>./pccs-check.sh local-pccs</code> (audits service, cert chain, both trust stores, live TLS); fix with <code>sudo ./tdx-attest.sh setup-host --collateral pccs --pccs-url https://127.0.0.1:8081 --deploy-pccs</code>, then <code>systemctl restart grpc-as</code>. For an existing PCCS: pass its root CA via <code>--pccs-ca</code></td></tr>
+  <tr><td><code>attest</code>: <code>RST_STREAM with error code: CANCEL</code>, grpc-as log <code>Client::new(): reqwest::Error { kind: Builder, source: Normal(ErrorStack([])) }</code> or <code>LazyLock instance has previously been poisoned</code></td><td>trustee 0.23 grpc-as panics when its HTTPS collateral client fails to set up TLS</td><td><code>sudo ./tdx-attest.sh collateral-offline</code>, then <code>attest</code>. Or downgrade to trustee 0.22. See <a href="TRUSTEE-0.23-GRPC-AS-PANIC.md">TRUSTEE-0.23-GRPC-AS-PANIC.md</a></td></tr>
+  <tr><td><code>attest</code>: <code>connection refused</code> on 127.0.0.1:3000</td><td><code>grpc-as.service</code> stopped or crashed (<code>attest</code> now says which)</td><td><code>systemctl start grpc-as.service</code>; check the <code>panicked at</code> line it prints</td></tr>
+  <tr><td><code>verify</code>: <code>CoCo-AS offline collateral EXPIRED</code></td><td>The <code>file://</code> collateral passed its <code>nextUpdate</code></td><td>Re-run <code>sudo ./tdx-attest.sh collateral-offline --fmspc &lt;FMSPC&gt;</code></td></tr>
+  <tr><td><code>attest</code> report shows <code>EAR Status: Unknown</code> on trustee 0.23</td><td>Older script version that only reads the pre-0.23 claim names (<code>ear.status</code>)</td><td>Update <code>tdx-attest.sh</code> (reads both <code>ear.status</code> and <code>ear_status</code>)</td></tr>
   <tr><td><code>grpcurl: command not found</code></td><td>Auto-installed grpcurl not in PATH</td><td>The script installs it to <code>/usr/local/bin</code> (root) or <code>~/.local/bin</code> — check <code>echo $PATH</code>, or re-run <code>attest</code> as root so it lands in <code>/usr/local/bin</code></td></tr>
   <tr><td>Quotes work, then break after host reboot</td><td><code>/run/dcap/qcnl.conf</code> wiped (tmpfs)</td><td><code>systemctl status qgsd-setup.service</code> — it should restore it</td></tr>
 </table>

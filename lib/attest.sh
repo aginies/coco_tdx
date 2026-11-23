@@ -319,6 +319,47 @@ query_rvps_reference_value() {
     return 0
 }
 
+# Extract fields from a decoded EAR JWT payload (stdin), supporting both
+# claim layouts:
+#   trustee <= 0.22: submods.cpu0."ear.status",
+#                    "ear.veraison.annotated-evidence".tdx.{quote,tcb_status}
+#   trustee >= 0.23 (EAR draft-04): submods.cpu0.ear_status,
+#                    ear_attester_claims.claims.{quote,tcb_status}
+# Prints one space-separated line in the order of the field names given as
+# arguments (ear_status tcb_status tee_type, or any quote body field such as
+# mr_td / rtmr_0..3 / xfam / mr_seam); missing fields print as "-".
+ear_fields() {
+    python3 -I -c '
+import sys, json
+try:
+    d = json.loads(sys.stdin.read())
+except Exception:
+    sys.exit(0)
+sub = d.get("submods", {}).get("cpu0", {})
+old = sub.get("ear.veraison.annotated-evidence", {}).get("tdx", {})
+new = sub.get("ear_attester_claims", {}).get("claims", {})
+ev = new or old
+quote = ev.get("quote", {})
+vals = {
+    "ear_status": sub.get("ear_status") or sub.get("ear.status") or d.get("ear_status", ""),
+    "tcb_status": ev.get("tcb_status", ""),
+    "tee_type": quote.get("header", {}).get("tee_type", ""),
+}
+body = quote.get("body", {})
+print(" ".join((vals[k] if k in vals else body.get(k, "")) or "-" for k in sys.argv[1:]))
+' "$@"
+}
+
+# Turn the "-" placeholders printed by ear_fields back into empty strings
+# (in the caller's variables) so the grep fallbacks below still apply.
+_ear_unset_dashes() {
+    local v
+    for v in "$@"; do
+        [[ "${!v}" == "-" ]] && printf -v "$v" '%s' ""
+    done
+    return 0
+}
+
 cmd_query_rv() {
     local id="${RV_ID:-mr_td}"
     query_rvps_reference_value "$id"
@@ -339,18 +380,8 @@ cmd_register_rv() {
 
     local mr_td="" rtmr_1="" rtmr_2="" xfam=""
     if command -v python3 >/dev/null 2>&1; then
-        read -r mr_td rtmr_1 rtmr_2 xfam < <(
-            python3 -c "
-import sys, json
-try:
-    d = json.loads(sys.stdin.read())
-    evidence = d.get('submods', {}).get('cpu0', {}).get('ear.veraison.annotated-evidence', {})
-    body = evidence.get('tdx', {}).get('quote', {}).get('body', {})
-    print(f\"{body.get('mr_td', '')} {body.get('rtmr_1', '')} {body.get('rtmr_2', '')} {body.get('xfam', '')}\")
-except Exception:
-    pass
-" <<<"$jwt_json"
-        )
+        read -r mr_td rtmr_1 rtmr_2 xfam < <(ear_fields mr_td rtmr_1 rtmr_2 xfam <<<"$jwt_json")
+        _ear_unset_dashes mr_td rtmr_1 rtmr_2 xfam
     fi
     if [[ -z "$mr_td" ]]; then
         mr_td=$(echo "$jwt_json" | grep -oP '"mr_td"\s*:\s*"\K[^"]+' | head -n1 || true)
@@ -414,35 +445,13 @@ cmd_attest() {
     local ear_status="" tcb_status="" tee_type="" mr_td="" rtmr_0="" rtmr_1="" rtmr_2="" rtmr_3="" xfam="" mr_seam=""
     if command -v python3 >/dev/null 2>&1; then
         read -r ear_status tcb_status tee_type mr_td rtmr_0 rtmr_1 rtmr_2 rtmr_3 xfam mr_seam < <(
-            python3 -c "
-import sys, json
-try:
-    d = json.loads(sys.stdin.read())
-    submod = d.get('submods', {}).get('cpu0', {})
-    ear_status = submod.get('ear.status', '')
-    evidence = submod.get('ear.veraison.annotated-evidence', {})
-    tdx = evidence.get('tdx', {})
-    quote = tdx.get('quote', {})
-    body = quote.get('body', {})
-    header = quote.get('header', {})
-    tcb_status = tdx.get('tcb_status', '')
-    tee_type = header.get('tee_type', '')
-    mr_td = body.get('mr_td', '')
-    rtmr_0 = body.get('rtmr_0', '')
-    rtmr_1 = body.get('rtmr_1', '')
-    rtmr_2 = body.get('rtmr_2', '')
-    rtmr_3 = body.get('rtmr_3', '')
-    xfam = body.get('xfam', '')
-    mr_seam = body.get('mr_seam', '')
-    print(f'{ear_status} {tcb_status} {tee_type} {mr_td} {rtmr_0} {rtmr_1} {rtmr_2} {rtmr_3} {xfam} {mr_seam}')
-except Exception:
-    pass
-" <<<"$jwt_json"
+            ear_fields ear_status tcb_status tee_type mr_td rtmr_0 rtmr_1 rtmr_2 rtmr_3 xfam mr_seam <<<"$jwt_json"
         )
+        _ear_unset_dashes ear_status tcb_status tee_type mr_td rtmr_0 rtmr_1 rtmr_2 rtmr_3 xfam mr_seam
     fi
 
     if [[ -z "$ear_status" ]]; then
-        ear_status=$(echo "$jwt_json" | grep -oP '"ear\.status"\s*:\s*"\K[^"]+' | head -n1 || true)
+        ear_status=$(echo "$jwt_json" | grep -oP '"ear[._]status"\s*:\s*"\K[^"]+' | head -n1 || true)
     fi
     if [[ -z "$tcb_status" ]]; then
         tcb_status=$(echo "$jwt_json" | grep -oP '"tcb_status"\s*:\s*"\K[^"]+' | head -n1 || true)
@@ -484,16 +493,10 @@ except Exception:
             token="$EAR_TOKEN"
             jwt_json=$(jwt_decode_payload "$token") || jwt_json=""
             if command -v python3 >/dev/null 2>&1; then
-                ear_status=$(python3 -c "
-import sys, json
-try:
-    d = json.loads(sys.stdin.read())
-    print(d.get('submods', {}).get('cpu0', {}).get('ear.status', ''))
-except Exception:
-    pass
-" <<<"$jwt_json")
+                ear_status=$(ear_fields ear_status <<<"$jwt_json")
+                [[ "$ear_status" == "-" ]] && ear_status=""
             else
-                ear_status=$(echo "$jwt_json" | grep -oP '"ear\.status"\s*:\s*"\K[^"]+' | head -n1 || true)
+                ear_status=$(echo "$jwt_json" | grep -oP '"ear[._]status"\s*:\s*"\K[^"]+' | head -n1 || true)
             fi
         fi
         warn_rtmr3_extended

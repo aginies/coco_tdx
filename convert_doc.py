@@ -516,7 +516,7 @@ def convert_md_to_html(md_path, html_path):
                         flush_list()
                         flush_table()
                         title = line[5:].strip()
-                        html_body.append(f"<h4>{parse_inline(title)}</h4>\n")
+                        html_body.append(f'<h4 id="{slugify(title)}">{parse_inline(title)}</h4>\n')
                         i += 1
                         continue
 
