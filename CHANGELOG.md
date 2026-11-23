@@ -3,6 +3,37 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.6.0] - 2026-11-23
+
+### Added
+- **Offline DCAP collateral workaround for the trustee 0.23 grpc-as panic.**
+  Trustee >= 0.23 verifies TDX quotes with a native Rust collateral client
+  whose HTTPS backend builds a reqwest client inside a `LazyLock`. On
+  SLES 16.1 with trustee 0.23.0~git0.564a3ba5, `reqwest::Client::new()`
+  panics (`ErrorStack([])` — OpenSSL init failure) instead of returning an
+  error, poisoning the `LazyLock` so every subsequent attestation request
+  panics too. The new `collateral-offline` command fetches the DCAP
+  collateral on the host with curl (system OpenSSL, which works fine),
+  assembles the JSON layout the verifier's `file://` backend expects, writes
+  it to `/var/lib/attestation-service/dcap/collateral.json`, and points
+  CoCo-AS at it (`verifier_config.dcap_verifier.collateral_service =
+  file://...`) — bypassing the broken HTTPS client entirely.
+  `collateral-online` switches back to the configured PCS/PCCS URL, and
+  `setup-trustee` preserves an existing `file://` collateral source.
+- **`--fmspc HEX` option** for `collateral-offline` (12-hex-char platform
+  FMSPC; when omitted it is extracted from a fresh guest quote).
+- **Offline collateral check** (`check`): verifies the collateral file
+  exists, is readable by `coco_as`, and is not past its earliest
+  `nextUpdate`.
+- **grpc-as preflight and diagnostics** (`attest`): verifies grpc-as is
+  active and its port reachable before sending a request; on failure shows
+  the relevant logs (Rust backtrace frames filtered out) plus a targeted
+  hint for the known 0.23 panic signatures.
+- **`TRUSTEE-0.23-GRPC-AS-PANIC.md`** — full root-cause analysis of the
+  panic (reproduction, strace, poisoned-LazyLock chain) and the workaround.
+- **`MEMO.md`** — plain-language overview of what the attestation process
+  does and why.
+
 ## [1.5.1] - 2026-11-23
 
 ### Added

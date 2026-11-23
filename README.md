@@ -1,6 +1,6 @@
 # Intel TDX Attestation — Step-by-Step Guide (Technology Preview SLES16.1)
 
-Version 1.5.1
+Version 1.6.0
 
 A guided walkthrough of how to set up and run Intel TDX attestation using
 `tdx-attest.sh`. The installation layer is distribution-pluggable (`lib/distros/`),
