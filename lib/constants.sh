@@ -152,6 +152,10 @@ readonly KBS_CONF="/etc/kbs.json"
 readonly KBS_JWKS_FILE="/etc/trustee/jwks.json"
 readonly RVPS_CONF="/etc/rvps.json"
 readonly AS_STORAGE_DIR="/var/lib/attestation-service/storage"
+# Offline DCAP collateral (trustee >= 0.23 file:// backend, see lib/collateral.sh).
+readonly DCAP_COLLATERAL_FILE="/var/lib/attestation-service/dcap/collateral.json"
+# Platform FMSPC (12 hex chars) for collateral-offline; empty = from guest quote.
+FMSPC=""
 
 # Trustee / KBS admin material (for secret delivery)
 readonly TRUSTEE_DIR="/etc/trustee"

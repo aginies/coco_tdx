@@ -16,6 +16,64 @@
 # token carries the matching attester_runtime_data claims (KBS needs the
 # tee-pubkey claim to release resources); the quote's report_data must then
 # equal sha384(canonical JSON) zero-padded to 64 bytes.
+# Print recent grpc-as logs, skipping Rust backtrace frames so the actual
+# panic message ("thread ... panicked at ...") and service state changes stay
+# visible instead of being pushed out by ~100 "N: 0x... - <unknown>" lines.
+show_grpc_as_logs() {
+    local lines="${1:-30}"
+    error "=== CoCo-AS logs (journalctl -u grpc-as.service, backtrace frames filtered) ==="
+    journalctl -u grpc-as.service -n 2000 --no-pager 2>/dev/null \
+        | grep -vE 'grpc-as\[[0-9]+\]: +[0-9]+: +0x[0-9a-f]+ - |grpc-as\[[0-9]+\]: +at ' \
+        | tail -n "$lines" >&2 || true
+    grpc_as_known_issue_hints
+}
+
+# Recognise known grpc-as failure signatures in the current service run and
+# print a targeted hint.
+grpc_as_known_issue_hints() {
+    local since logs ver
+    since=$(systemctl show -p ActiveEnterTimestamp --value grpc-as.service 2>/dev/null || true)
+    logs=$(journalctl -u grpc-as.service ${since:+--since "$since"} -n 2000 --no-pager 2>/dev/null || true)
+    if grep -q 'Client::new(): reqwest::Error { kind: Builder' <<<"$logs"; then
+        ver=$(rpm -q --qf '%{VERSION}' trustee 2>/dev/null || echo unknown)
+        error "Known issue: grpc-as panics building its HTTPS client (reqwest/OpenSSL init),"
+        error "before the quote is even verified. Seen with trustee ${ver}; 0.22 works."
+        error "Workaround: '${SCRIPT_NAME} collateral-offline' (file:// collateral, no HTTPS client),"
+        error "or downgrade trustee to 0.22. See TRUSTEE-0.23-GRPC-AS-PANIC.md."
+    elif grep -q 'LazyLock instance has previously been poisoned' <<<"$logs"; then
+        error "grpc-as is in a poisoned state after an earlier panic — restart it: systemctl restart grpc-as.service"
+    fi
+}
+
+# Verify grpc-as.service is active and CoCo-AS port is reachable before
+# sending a request. On failure, explain why (crashed vs stopped) and show
+# the relevant logs. Returns 0 if ready, 1 otherwise.
+grpc_as_preflight() {
+    local host="${COCO_AS%:*}" port="${COCO_AS##*:}"
+    # Only check the local unit when CoCo-AS is local.
+    if [[ "$host" == "127.0.0.1" || "$host" == "localhost" ]] \
+        && systemctl cat grpc-as.service >/dev/null 2>&1; then
+        local state result
+        state=$(systemctl is-active grpc-as.service 2>/dev/null || true)
+        if [[ "$state" != "active" ]]; then
+            result=$(systemctl show -p Result --value grpc-as.service 2>/dev/null || true)
+            error "grpc-as.service is ${state:-unknown} (last result: ${result:-unknown})"
+            show_grpc_as_logs 40
+            if journalctl -u grpc-as.service -n 2000 --no-pager 2>/dev/null | grep -q 'panicked at'; then
+                error "grpc-as panicked earlier — see the 'panicked at' line above for the cause."
+            fi
+            error "Start it with: systemctl start grpc-as.service (then re-run attest)"
+            return 1
+        fi
+    fi
+    if ! timeout 3 bash -c "exec 3<>/dev/tcp/${host}/${port}" 2>/dev/null; then
+        error "CoCo-AS ${COCO_AS} is not accepting connections"
+        show_grpc_as_logs 40
+        return 1
+    fi
+    return 0
+}
+
 attest_evaluate_quote() {
     local quote_b64="$1"
     local runtime_data_json="${2:-}"
@@ -55,6 +113,11 @@ attest_evaluate_quote() {
 }
 EOF
 
+    if ! grpc_as_preflight; then
+        rm -f "$req_file"
+        die "CoCo-AS is not running — cannot attest."
+    fi
+
     local response=""
     log "Sending request via grpcurl to ${COCO_AS}"
     if ! response=$(grpcurl -plaintext \
@@ -66,8 +129,7 @@ EOF
         echo "$response" >&2
         rm -f "$req_file"
         echo "" >&2
-        error "=== CoCo-AS logs (journalctl -u grpc-as.service -n 30) ==="
-        journalctl -u grpc-as.service -n 30 --no-pager >&2 2>/dev/null || true
+        show_grpc_as_logs
         die "Attestation request failed."
     fi
     rm -f "$req_file"

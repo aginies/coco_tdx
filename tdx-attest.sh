@@ -64,6 +64,7 @@ set -Eeuo pipefail
 #   setup-vm.sh    6. VM setup (libvirt, guest)
 #   attest.sh      7. remote attestation + RVPS
 #   secret.sh      7b. secret delivery (KBS)
+#   collateral.sh  7c. offline DCAP collateral (CoCo-AS file://)
 # This file keeps only the orchestration (section 8) and CLI (section 9).
 #
 # Distribution adapters (lib/distros/): the install layer (package manager,
@@ -74,7 +75,7 @@ set -Eeuo pipefail
 
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-for _lib in constants logging helpers license checks setup-host setup-vm attest secret; do
+for _lib in constants logging helpers license checks setup-host setup-vm attest secret collateral; do
     # shellcheck source=/dev/null
     source "${SCRIPT_DIR}/lib/${_lib}.sh"
 done
@@ -201,6 +202,10 @@ commands are tagged with the target). Use -q to show errors only.
   setup-vm         Create TDX VM (qcow2 + XML), inject SSH key, start
   convert-tdx      Convert an existing (non-TDX) VM to a TDX VM in-place
   register-platform Register platform with Intel (fixes PCK cert 404)
+  collateral-offline Fetch DCAP collateral to a file, point CoCo-AS at it
+                   (workaround for trustee 0.23 HTTPS client panic; refresh
+                   before nextUpdate). Uses --fmspc or a fresh guest quote.
+  collateral-online  Point CoCo-AS back at the PCS/PCCS URL
   all              check -> setup-host -> setup-qgs -> setup-trustee -> setup-vm
 
 === GUEST (run on host, acts inside the TD over ssh) ===
@@ -240,6 +245,7 @@ Options:
     --subscription KEY     Intel Registration Service primary subscription key
     --csv PATH             PCKIDRetrievalTool CSV output file
     --collateral MODE      pcs (global Intel PCS, default) or pccs (local cache)
+    --fmspc HEX            Platform FMSPC for collateral-offline (12 hex chars)
     --pcs-url URL          Intel PCS endpoint (default: ${PCS_URL})
     --pccs-url URL         Local PCCS endpoint (default: ${PCCS_URL})
     --pccs-ca PATH         Local PCCS root CA certificate file (HTTPS)
@@ -466,6 +472,11 @@ parse_args() {
             VM_VIDEO="$2"
             shift
             ;;
+        --fmspc)
+            req_val "$1" "${2:-}"
+            FMSPC="$2"
+            shift
+            ;;
         --convert-vm)
             req_val "$1" "${2:-}"
             CONVERT_VM_NAME="$2"
@@ -512,6 +523,14 @@ parse_args() {
     check-platform | pccs-check)
         init_debug
         cmd_check_platform
+        ;;
+    collateral-offline)
+        init_debug
+        cmd_collateral_offline
+        ;;
+    collateral-online)
+        init_debug
+        cmd_collateral_online
         ;;
     register-platform | register)
         init_debug

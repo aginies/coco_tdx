@@ -562,12 +562,43 @@ verify_port() {
     fi
 }
 
+# Offline collateral (file://): file must exist, be readable by coco_as and
+# not be past its earliest nextUpdate.
+verify_offline_collateral() {
+    local f="$1" next
+    if [[ ! -s "$f" ]]; then
+        record "FAIL" "CoCo-AS offline collateral missing: ${f}" "Run: ${SCRIPT_NAME} collateral-offline"
+        return
+    fi
+    if id coco_as >/dev/null 2>&1 && ! runuser -u coco_as -- test -r "$f" 2>/dev/null; then
+        record "FAIL" "CoCo-AS offline collateral not readable by coco_as: ${f}" "chown coco_as ${f}"
+        return
+    fi
+    next=$(python3 -I -c '
+import json, sys
+c = json.load(open(sys.argv[1]))["collaterals"]
+d = [v["tcbInfo"]["nextUpdate"] for e in c["tcbinfos"] for k, v in e.items() if "tcbinfo" in k]
+d += [c[k]["enclaveIdentity"]["nextUpdate"] for k in ("qeidentity", "qeidentity_early", "tdqeidentity", "tdqeidentity_early") if c.get(k)]
+print(min(d))' "$f" 2>/dev/null || true)
+    if [[ -z "$next" ]]; then
+        record "WARN" "CoCo-AS offline collateral: cannot parse ${f}" "Re-run: ${SCRIPT_NAME} collateral-offline"
+    elif (( $(date -d "$next" +%s 2>/dev/null || echo 0) < $(date +%s) )); then
+        record "FAIL" "CoCo-AS offline collateral EXPIRED (nextUpdate ${next})" "Re-run: ${SCRIPT_NAME} collateral-offline"
+    else
+        record "PASS" "CoCo-AS offline collateral valid until ${next} (${f})"
+    fi
+}
+
 # Confirm the collateral endpoint is consistent across QCNL config and
 # CoCo-AS config.
 verify_collateral_consistency() {
     local qcnl_url as_url
     qcnl_url=$(grep -oP '"pccs_url"\s*:\s*"\K[^"]+' "$QCNL_ETC_CONF" 2>/dev/null || true)
     as_url=$(grep -oP '"collateral_service"\s*:\s*"\K[^"]+' "$GRPC_AS_CONF" 2>/dev/null || true)
+    if [[ "$as_url" == file://* ]]; then
+        verify_offline_collateral "${as_url#file://}"
+        return
+    fi
     if [[ -z "$qcnl_url" || -z "$as_url" ]]; then
         record "WARN" "Collateral consistency: could not read both URLs" \
             "QCNL=${qcnl_url:-?} CoCo-AS=${as_url:-?}"

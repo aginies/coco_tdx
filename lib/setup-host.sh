@@ -586,8 +586,15 @@ cmd_setup_trustee() {
     fi
 
     setup_collateral_source
-    local as_collateral
+    local as_collateral prev_collateral
     as_collateral=$(collateral_url)
+    # Keep an offline (file://) collateral source set by 'collateral-offline';
+    # 'collateral-online' switches back explicitly.
+    prev_collateral=$(grep -oP '"collateral_service"\s*:\s*"\K[^"]+' "$GRPC_AS_CONF" 2>/dev/null || true)
+    if [[ "$prev_collateral" == file://* && -s "${prev_collateral#file://}" ]]; then
+        log "Keeping offline CoCo-AS collateral: ${prev_collateral} (run collateral-online to revert)"
+        as_collateral="$prev_collateral"
+    fi
     log "Writing CoCo-AS config: $GRPC_AS_CONF"
     mkdir -p "$AS_STORAGE_DIR"
     if id coco_as >/dev/null 2>&1; then
