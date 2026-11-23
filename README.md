@@ -1,6 +1,6 @@
 # Intel TDX Attestation — Step-by-Step Guide (Technology Preview SLES16.1)
 
-Version 1.4.0
+Version 1.5.0
 
 A guided walkthrough of how to set up and run Intel TDX attestation using
 `tdx-attest.sh`. The installation layer is distribution-pluggable (`lib/distros/`),
@@ -39,7 +39,7 @@ This gives you the full history, all branches, and the ability to update with
 **Option 2 — Download a specific release tarball:**
 
 ```bash
-VERSION="1.4.0"
+VERSION="1.5.0"
 curl -LO "https://github.com/aginies/coco_tdx/releases/download/v${VERSION}/coco_tdx-${VERSION}.tar.gz"
 tar xzf coco_tdx-${VERSION}.tar.gz
 cd coco_tdx-${VERSION}
@@ -52,9 +52,9 @@ and documentation — ready to use without Git.
 
 ```bash
 # Download a specific tag without cloning the full repo
-curl -LO "https://github.com/aginies/coco_tdx/archive/refs/tags/v1.4.0.tar.gz"
-tar xzf v1.4.0.tar.gz
-cd coco_tdx-1.4.0
+curl -LO "https://github.com/aginies/coco_tdx/archive/refs/tags/v1.5.0.tar.gz"
+tar xzf v1.5.0.tar.gz
+cd coco_tdx-1.5.0
 ```
 
 ---

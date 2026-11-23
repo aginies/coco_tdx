@@ -5,6 +5,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-11-23
+
 ### Fixed
 - **Video devices are impossible in a secure TDX VM (doc + code correction).**
   A Trust Domain cannot boot with a video device (virtio-gpu or QXL) attached:
