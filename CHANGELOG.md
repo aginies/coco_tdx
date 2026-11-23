@@ -3,7 +3,19 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [1.5.1] - 2026-11-23
+
+### Added
+- **README: SUSE Package Hub 16.1 is required on SLES 16.1 systems that use
+  the Virtualization:SGX OBS repository.** The OBS builds (e.g. `libnvat2`)
+  depend on libraries that are not in the base SLES repositories —
+  `libspdlog.so.1.15` — which live in the *SUSE Package Hub* module.
+  Without it, `zypper dup` fails with `nothing provides
+  'libspdlog.so.1.15()(64bit)'`. Documented in the prerequisites table, the
+  Step 2 "latest packages" testing note, Step 7 (`setup-guest` prerequisite
+  note + how-it-works bullet), and the Troubleshooting map: activate with
+  `sudo suseconnect -p PackageHub/16.1/x86_64` (list: `suseconnect -l`),
+  then `zypper refresh`. `README.html` regenerated.
 
 ## [1.5.0] - 2026-11-23
 

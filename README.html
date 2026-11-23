@@ -187,6 +187,7 @@ sudo ./tdx-attest.sh secret-get --guest-ip &lt;GUEST_IP&gt; --path default/test/
 <table>
   <tr><th>Item</th><th>Where to get it</th><th>Needed for</th></tr>
   <tr><td>SLES 16.1 installer ISO</td><td>SUSE Customer Center (subscription)</td><td><code>setup-vm</code> / <code>all</code> (<code>--guest-iso</code>) and the manual install in Step 6</td></tr>
+  <tr><td>SUSE Package Hub 16.1 (module)</td><td><code>sudo suseconnect -p PackageHub/16.1/x86_64</code> (needs a valid SLES subscription; list available modules with <code>suseconnect -l</code>)</td><td><strong>Every SLES 16.1 system that uses the Virtualization:SGX OBS repository</strong> — the host for the Step 2 "latest packages" test, and the guest for Step 7. The OBS builds depend on libraries that are not in the base SLES repos (e.g. <code>libspdlog.so.1.15</code> for <code>libnvat2</code>), which live in PackageHub; without it <code>zypper dup</code> fails</td></tr>
   <tr><td>Intel Trusted Services subscription key</td><td><a href="https://api.portal.trustedservices.intel.com/">Intel Trusted Services Portal</a></td><td><strong>Only</strong> if your platform is unregistered (PCK cert 404) — for <code>register-platform --subscription &lt;KEY&gt;</code></td></tr>
 </table>
 <div class="callout warn">
@@ -417,6 +418,9 @@ rpm -qa | grep -Ei 'dcap|sgx|qpl|trustee|tdx-qgs|grpcurl' # packages present</pr
   <p><strong>Testing — latest packages on top of SLES 16.1:</strong> To test with the newest DCAP/QGS builds instead of the SLES 16.1 repository versions, add the Virtualization:SGX OBS repository before running <code>setup-host</code>:</p>
   <pre>zypper ar -cf https://download.opensuse.org/repositories/Virtualization:/SGX/16.1/ obs_SGX
 zypper refresh</pre>
+  <p><strong>PackageHub is required on SLES 16.1.</strong> The OBS builds depend on libraries that are not in the base SLES repositories — e.g. <code>libnvat2</code> needs <code>libspdlog.so.1.15</code> — and those live in the <em>SUSE Package Hub</em> module. Without it, <code>zypper dup</code> fails with <code>nothing provides 'libspdlog.so.1.15()(64bit)'</code>. Activate the module (needs a valid SLES subscription) and refresh before installing:</p>
+  <pre>sudo suseconnect -p PackageHub/16.1/x86_64   # list available: suseconnect -l
+sudo zypper refresh</pre>
 </div>
 <div class="callout info">
   <p><strong>Tip — deploying a local PCCS server (optional, before air-gapped use):</strong> The <code>suse-sgx-dcap-pccs</code> package provides the PCCS server. It listens on HTTPS port <strong>8081</strong> (loopback only) and caches Intel PCS data locally in a SQLite DB. With the default <code>CachingFillMode: LAZY</code> it fetches <em>missing</em> collateral from Intel PCS on first request (plus a daily refresh at 01:00) — so warm the cache while the host still has internet, then all collateral traffic stays local.</p>
@@ -753,6 +757,12 @@ virsh dumpxml tdx-guest | grep -E 'launchSecurity|vsock|loader'</pre>
 <h2><span class="step-badge">Step 7</span>Set up the guest (inside the TD)</h2>
 <p class="caption"><strong>Command (run on the HOST, acts inside the guest via SSH):</strong></p>
 <pre>sudo ./tdx-attest.sh setup-guest --guest-ip &lt;GUEST_IP&gt;</pre>
+<div class="callout info">
+  <p><strong>Prerequisite — SUSE Package Hub in the guest:</strong> the guest is a stock SLES 16.1 install, and <code>setup-guest</code> adds the Virtualization:SGX OBS repository there and runs <code>zypper dup --allow-vendor-change</code>. The OBS builds need libraries that are not in the base SLES repos (e.g. <code>libspdlog.so.1.15</code>, required by <code>libnvat2</code>), which live in the <em>SUSE Package Hub</em> module. Activate it in the guest first (needs a valid SLES subscription on the guest):</p>
+  <pre>sudo suseconnect -p PackageHub/16.1/x86_64   # list available: suseconnect -l
+sudo zypper refresh</pre>
+  <p>Without it, the <code>zypper dup</code> inside <code>setup-guest</code> fails with <code>nothing provides 'libspdlog.so.1.15()(64bit)'</code>.</p>
+</div>
 <p class="caption"><strong>What it does, in order — with the guest/host distinction explicit:</strong></p>
 <ol>
   <li><strong>Tests SSH connectivity</strong> to the guest.</li>
@@ -784,6 +794,7 @@ virsh dumpxml tdx-guest | grep -E 'launchSecurity|vsock|loader'</pre>
 </ol>
 <ul>
   <li><em>Why:</em> <code>test_tdx_attest</code> and <code>kbs-client</code> link against these to talk to <code>/dev/tdx_guest</code> and QGS.</li>
+  <li><em>How:</em> adds the Virtualization:SGX OBS repo in the guest, installs the missing packages, then runs <code>zypper dup --allow-vendor-change</code> to align everything to the OBS versions — which is why the guest needs the <em>SUSE Package Hub</em> module (see the prerequisite note above).</li>
 </ul>
 <ol>
   <li><strong>Verifies the packaged <code>kbs-client</code> has the TDX attester</strong> (and removes any stale source-built <code>/usr/local/bin/kbs-client-tdx</code>).</li>
@@ -1132,6 +1143,7 @@ sudo ./tdx-attest.sh setup-vm --guest-iso /path/to/SLE-16.1.iso --collateral pcc
   <tr><td>KBS rejects tokens: <code>neither trusted jwk set nor trusted pem public key works</code></td><td>Token header embeds a <code>jwk</code> but the <code>x5c</code> chain is empty or doesn't chain to <code>trusted_certs_paths</code></td><td><code>sudo ./tdx-attest.sh setup-trustee</code> (regenerates <code>/etc/trustee/as-signer.crt</code>, <code>grpc-as.json</code> <code>cert_path</code>, <code>kbs.json</code> <code>trusted_certs_paths</code>); or <code>verify</code> → JWKS rows</td></tr>
   <tr><td><code>trustee.service</code> reports <code>inactive</code> / condition failed</td><td>The monolithic <code>trustee.service</code> is intentionally disabled in favor of individual modular units</td><td>Expected behavior. Verify the active modular services: <code>systemctl is-active grpc-as kbs rvps qgsd</code></td></tr>
   <tr><td>Guest kbs-client missing or lacks TDX attester</td><td><code>trustee</code> package too old (&lt; 0.21)</td><td>Install/upgrade the <code>trustee</code> package from the SGX repo, then re-run <code>sudo ./tdx-attest.sh setup-guest --guest-ip &lt;GUEST_IP&gt;</code></td></tr>
+  <tr><td><code>zypper dup</code> fails: <code>nothing provides 'libspdlog.so.1.15()(64bit)'</code> (guest in <code>setup-guest</code>, or a SLES 16.1 host with the Virtualization:SGX OBS repo)</td><td>The OBS packages (e.g. <code>libnvat2</code>) depend on libraries from the <em>SUSE Package Hub</em> module, which is not enabled on a stock SLES 16.1 system</td><td><code>sudo suseconnect -p PackageHub/16.1/x86_64</code> (check <code>suseconnect -l</code>), then <code>sudo zypper refresh</code> and re-run <code>zypper dup</code> / <code>setup-guest</code></td></tr>
   <tr><td>Guest can't reach KBS (secret-get times out)</td><td>Host firewall blocks 8080, wrong guest IP, or libvirt NAT issue</td><td>From the guest: <code>curl -sI http://&lt;HOST_IP&gt;:8080</code> — check the host firewall (<code>sudo firewall-cmd --list-ports</code>) and re-fetch the IP with <code>virsh net-dhcp-leases default</code></td></tr>
   <tr><td>CoCo-AS log: <code>rustls_platform_verifier … UnknownIssuer</code> / local PCCS reports TLS certificate errors</td><td>PCCS server cert is self-signed (not signed by an anchored CA), the CA is missing from the p11-kit store, or <code>grpc-as</code> started before the CA was anchored</td><td>Run <code>./pccs-check.sh local-pccs</code> (audits service, cert chain, both trust stores, live TLS); fix with <code>sudo ./tdx-attest.sh setup-host --collateral pccs --pccs-url https://127.0.0.1:8081 --deploy-pccs</code>, then <code>systemctl restart grpc-as</code>. For an existing PCCS: pass its root CA via <code>--pccs-ca</code></td></tr>
   <tr><td><code>grpcurl: command not found</code></td><td>Auto-installed grpcurl not in PATH</td><td>The script installs it to <code>/usr/local/bin</code> (root) or <code>~/.local/bin</code> — check <code>echo $PATH</code>, or re-run <code>attest</code> as root so it lands in <code>/usr/local/bin</code></td></tr>
